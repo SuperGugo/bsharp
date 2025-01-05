@@ -302,11 +302,9 @@ private:
         // Structures
         "if", "else", "while", "for", "do", "switch", "case", "default", "break", "continue", "fn", "return",
         // Data types (reserved)
-        "int", "float", "bool", "char", "short", "long", "double", "enum",
+        "int", "float", "bool", "char", "short", "long", "double", "enum", "struct",
         // Storage duration
         "auto", "static", "extrn",
-        // Other
-        "import", "alloc", "realloc", "destroy", "struct",
         // VERY important
         "gooning"
         };
