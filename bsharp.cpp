@@ -4,6 +4,8 @@
 #include <sstream>
 #include <fstream>
 #include <unordered_map>
+#include <map>
+#include <memory>
 
 enum TokenType {
     Keyword,
@@ -28,6 +30,168 @@ struct Token {
     std::string value;
     unsigned int line;
     unsigned int column;
+};
+
+/*
+    My philosophy regarding expressions and statements is simple: if it has a result in translation, 
+    it is included (as either). This is the reason many such as Declaration Statements are not included: 
+    they do not have an effect on translation. Technically speaking neither do Blocks, but they are
+    included because they affect the way jumps are calculated during translation.
+    Another very simple and obvious point is that Expressions always return something (which can be null)
+    while statements never return anything. I also did not adopt the Rust way of separating them: where
+    statements such as if, while, for, loop can all return something and be used in expressions.
+*/
+
+struct LiteralExpression; struct VariableReference; struct Assignment; struct Operation; struct TernaryOperation; struct FunctionCall;
+
+struct Expression {
+    enum Type {
+        LiteralExpressionType,
+        VariableReferenceType, // includes member access: array position ([]), template access (.), and future struct access (.)
+        AssignmentType,
+        OperationType,
+        TernaryOperationType,
+        FunctionCallType
+    } type;
+
+    LiteralExpression* literalExpression;
+    VariableReference* variableReference;
+    Assignment* assignment;
+    Operation* operation;
+    TernaryOperation* ternaryOperation;
+    FunctionCall* functionCall;
+
+    Expression(LiteralExpression* literalExpression) : type(LiteralExpressionType), literalExpression(literalExpression) {};
+    Expression(VariableReference* variableReference) : type(VariableReferenceType), variableReference(variableReference) {};
+    Expression(Assignment* assignment) : type(AssignmentType), assignment(assignment) {};
+    Expression(Operation* operation) : type(OperationType), operation(operation) {};
+    Expression(TernaryOperation* ternaryOperation) : type(TernaryOperationType), ternaryOperation(ternaryOperation) {};
+    Expression(FunctionCall* functionCall) : type(FunctionCallType), functionCall(functionCall) {};
+};
+
+struct LiteralExpression {
+    enum Type {
+        Integer,
+        Floating,
+        Char,
+        Array
+    } type;
+
+    int integer = 0; // also handles char
+    float floating = 0.0;
+    std::vector<Expression> array;
+};
+
+struct VariableReference {
+    enum Type {
+        Value,
+        Reference,
+        Pointer,
+        Member // what i called NoVar in the other compiler. it's whenever the position is an expression (pointed by to AX/R1, i'd assume)
+    } type;
+
+    std::string identifier;
+    std::vector<Expression> position; // it's usually a literal for Values and Pointers! it's another VariableReference of type Value for References, and something else for Members.
+};
+
+struct Assignment { // remember! assignments ALWAYS return the variable after assignment, even x++ (it is no different from ++x)
+    bool augmentedAssignment = false; // if true, no registers are involved with the first part of the assignment. e.g., x+=1 directly does ADD X, 1.
+    VariableReference variable;
+    Expression value;
+};
+
+struct Operation { // it also includes conditions. e.g. x>y is an operation with > as the operation. handled different in translation, though.
+    Expression a;
+    Expression b;
+    std::string operation;
+};
+
+struct TernaryOperation {
+    Expression a;
+    Expression b;
+    Expression condition; // C is for condition!
+};
+
+struct FunctionCall {
+    std::string identifier;
+    std::vector<Expression> arguments;
+};
+
+struct Declaration; struct Block; struct FunctionDefinition; struct IfStatement; struct SwitchStatement; struct WhileLoop; struct ForLoop; struct ReturnCall; struct BreakCall; struct ContinueCall;
+
+struct Statement {
+    enum Type {
+        ExpressionType,
+        BlockType,
+        FunctionDefinitionType,
+        IfStatementType,
+        SwitchStatementType,
+        WhileLoopType,
+        ForLoopType,
+        ReturnCallType,
+        BreakCallType,
+    } type;
+
+    Expression* expression;
+    Block* block;
+    FunctionDefinition* functionDefinition;
+    IfStatement* ifStatement;
+    SwitchStatement* switchStatement;
+    WhileLoop* whileLoop;
+    ForLoop* forLoop;
+    ReturnCall* returnCall;
+    BreakCall* breakCall;
+
+    Statement(Expression* expression) : type(ExpressionType), expression(expression) {};
+    Statement(Block* block) : type(BlockType), block(block) {};
+    Statement(FunctionDefinition* functionDefinition) : type(FunctionDefinitionType), functionDefinition(functionDefinition) {};
+    Statement(IfStatement* ifStatement) : type(IfStatementType), ifStatement(ifStatement) {};
+    Statement(SwitchStatement* switchStatement) : type(SwitchStatementType), switchStatement(switchStatement) {};
+    Statement(WhileLoop* whileLoop) : type(WhileLoopType), whileLoop(whileLoop) {};
+    Statement(ForLoop* forLoop) : type(ForLoopType), forLoop(forLoop) {};
+    Statement(ReturnCall* returnCall) : type(ReturnCallType), returnCall(returnCall) {};
+    Statement(BreakCall* breakCall) : type(BreakCallType), breakCall(breakCall) {};
+};
+
+struct Block {
+    std::vector<Statement> statements;
+};
+
+struct FunctionDefinition {
+    std::string identifier;
+    std::vector<std::string> parameters; // each parameter includes a declaration (local) during parsing.
+    Statement body;
+};
+
+struct IfStatement {
+    Expression condition;
+    Statement thenBranch;
+    Statement elseBranch;
+};
+
+struct SwitchStatement {
+    Expression condition;
+    std::map<int, Statement> branches;
+};
+
+struct WhileLoop {
+    Expression condition;
+    Statement body;
+};
+
+struct ForLoop {
+    Statement init;
+    Statement increment;
+    Statement body;
+    Expression condition;
+};
+
+struct ReturnCall {
+    Expression toReturn;
+};
+
+struct BreakCall {
+    bool abrupt; // false is continue, true is break
 };
 
 void error(ErrorType err, Token token) {
@@ -298,11 +462,11 @@ private:
     std::string source;
     size_t currentPos;
     unsigned int line, column;
-    std::string keywords[29] = {
+    std::string keywords[26] = {
         // Structures
         "if", "else", "while", "for", "do", "switch", "case", "default", "break", "continue", "fn", "return",
         // Data types (reserved)
-        "int", "float", "bool", "char", "short", "long", "double", "enum", "struct",
+        "int", "float", "bool", "char", "short", "long", "double", "enum", "struct", "template"
         // Storage duration
         "auto", "static", "extrn",
         // VERY important
@@ -335,7 +499,7 @@ private:
             }
         }
 
-        for (int i = 0; i < 29; i++) {
+        for (int i = 0; i < 26; i++) {
             if (keywords[i] == id) {
                 return {Keyword, id};
             }
@@ -429,7 +593,7 @@ private:
 };
 
 int main(int argc, char* argv[]) {
-    std::string sourceCode = "#include std.h\nauto xoxo = nuh;";
+    std::string sourceCode = "#include std.h\nauto xoxo = 3.5;";
     Lexer lexer(sourceCode);
     std::vector<Token> tokens = lexer.tokenize();
     int it = 0;
