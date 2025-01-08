@@ -31,5 +31,8 @@
 *.out
 *.app
 
+# Idiotic text editor
+.vscode/
+
 # WIP
 std.*
