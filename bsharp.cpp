@@ -256,6 +256,165 @@ void error(ErrorType err, Token token) {
 std::map<std::string, int> vartable; // only global variables. for extrn, the int is -1, and is solved at linking time.
 std::vector<std::string> funtable;
 
+
+// DEBUG PURPOSES ONLY!
+void printExpression(Expression exp, int indent) {
+    switch (exp.type) {
+        case 0:
+        {
+            LiteralExpression x = *exp.literalExpression;
+            switch (x.type) {
+                case 0:
+                {
+                    std::cout << std::string(indent, ' ') << "Integer: " << x.integer << std::endl;
+                    break;
+                }
+                case 1:
+                {
+                    std::cout << std::string(indent, ' ') << "Floating: " << x.floating << std::endl;
+                    break;
+                }
+                case 2:
+                {
+                    std::cout << std::string(indent, ' ') << "Char: " << (char)x.integer << std::endl;
+                    break;
+                }
+                case 3:
+                {
+                    std::cout << std::string(indent, ' ') << "Array: " << std::endl;
+                    for (int i = 0; i < x.array.size(); i++) {
+                        printExpression(x.array[i], indent+2);
+                    }
+                    break;
+                }
+            }
+            break;
+        }
+        case 1:
+        {
+            VariableReference x = *exp.variableReference;
+            switch (x.type) {
+                case 0:
+                {
+                    std::cout << std::string(indent, ' ') << "Variable: " << x.identifier << std::endl;
+                    break;
+                }
+                case 1:
+                {
+                    std::cout << std::string(indent, ' ') << "Reference: " << x.identifier << std::endl;
+                    break;
+                }
+                case 2:
+                {
+                    std::cout << std::string(indent, ' ') << "Pointer: " << x.identifier << std::endl;
+                    break;
+                }
+                case 3:
+                {
+                    std::cout << std::string(indent, ' ') << "Pointer: " << std::endl;
+                    printExpression(x.position, indent+2);
+                    break;
+                }
+            }
+            break;
+        }
+        case 2:
+        {
+            Assignment x = *exp.assignment;
+            if (x.augmentedAssignment) {
+                std::cout << std::string(indent, ' ') << "Augmented assignment: " << std::endl;
+            } else {
+                std::cout << std::string(indent, ' ') << "Assignment: " << std::endl;
+            }
+            printExpression(Expression(&x.variable), indent+2);
+            printExpression(x.value, indent+2);
+            
+            break;
+        }
+        case 3:
+        {
+            Operation x = *exp.operation;
+            std::cout << std::string(indent, ' ') << "Operation: " << std::endl;
+            break;
+        }
+        case 4:
+        {
+            TernaryOperation x = *exp.ternaryOperation;
+            std::cout << std::string(indent, ' ') << "Ternary Operation: " << std::endl;
+            break;
+        }
+        case 5:
+        {
+            FunctionCall x = *exp.functionCall;
+            std::cout << std::string(indent, ' ') << "Function call: ";
+            break;
+        }
+    }
+}
+
+void printNode(Statement statement, int indent) {
+    switch (statement.type) {
+        case 0:
+        {
+            Expression exp = statement.expression;
+            printExpression(exp, indent);
+            break;
+        }
+        case 1:
+        {
+            Block* x = statement.block;
+            std::cout << std::string(indent, ' ') << "Block: ";
+            break;
+        }
+        case 2:
+        {
+            FunctionDefinition* x = statement.functionDefinition;
+            std::cout << std::string(indent, ' ') << "Function definition: ";
+            break;
+        }
+        case 3:
+        {
+            IfStatement* x = statement.ifStatement;
+            std::cout << std::string(indent, ' ') << "If statement: " << std::endl;
+            break;
+        }
+        case 4:
+        {
+            SwitchStatement* x = statement.switchStatement;
+            std::cout << std::string(indent, ' ') << "Switch statement: " << std::endl;
+            break;
+        }
+        case 5:
+        {
+            WhileLoop* x = statement.whileLoop;
+            std::cout << std::string(indent, ' ') << "While loop: " << std::endl;
+            break;
+        }
+        case 6:
+        {
+            ForLoop* x = statement.forLoop;
+            std::cout << std::string(indent, ' ') << "For loop: " << std::endl;
+            break;
+        }
+        case 7:
+        {
+            ReturnCall* x = statement.returnCall;
+            std::cout << std::string(indent, ' ') << "Return call: ";
+            break;
+        }
+        case 8:
+        {
+            BreakCall* x = statement.breakCall;
+            if (x->abrupt) {
+                std::cout << std::string(indent, ' ') << "Break call";
+            } else {
+                std::cout << std::string(indent, ' ') << "Continue call";
+            }
+            break;
+        }
+    }
+}
+
 class Parser {
 public:
     Parser(const std::vector<Token>& tokens) : tokens(tokens), current(0) {}
@@ -325,8 +484,8 @@ private:
                 std::cout<<tokens[current].value<<std::endl;
             } else if (tokens[current].type == Identifier) {
                 std::cout<<"Variable"<<std::endl;
-                VariableReference var = parseIdentifier();
-                expressions.push_back(Expression(&var));
+                VariableReference* var = new VariableReference(parseIdentifier());
+                expressions.push_back(Expression(var));
             } else if (tokens[current].value == "auto" || tokens[current].value == "static") {
                 std::cout<<"Declaration"<<std::endl;
                 current++; // Skip storage duration
@@ -335,34 +494,36 @@ private:
                 current++; // Skip "="
                 Expression value = parseExpression().expression;
                 current++; // Skip ";"
-                Assignment ret;
-                ret.variable = var;
-                ret.value = value;
-                expressions.push_back(&ret);
+                Assignment* ret = new Assignment();
+                ret->variable = var;
+                ret->value = value;
+                expressions.push_back(ret);
             } else if (tokens[current].value == "[" || tokens[current].value == "\"") {
                 std::cout<<"Array"<<std::endl;
-                LiteralExpression arr = parseArray();
+                LiteralExpression* arr = new LiteralExpression(parseArray());
                 current--;
-                expressions.push_back(Expression(&arr));
+                expressions.push_back(Expression(arr));
             } else if (tokens[current].type == Literal || tokens[current].value == "'") {
-                std::cout<<"Literal"<<std::endl;
-                LiteralExpression lit;
+                std::cout << "Literal" << std::endl;
+                LiteralExpression* lit = new LiteralExpression();
+
                 if (isdigit(tokens[current].value[0])) {
-                    lit = LiteralExpression(stoi(tokens[current].value)); // TODO: floats
+                    *lit = LiteralExpression(stoi(tokens[current].value)); // TODO: floats
                 } else {
                     skip("'");
-                    lit = LiteralExpression(tokens[current].value[0]);
+                    *lit = LiteralExpression(tokens[current].value[0]);
                     current++; // Skip "'"
                 }
-                expressions.push_back(Expression(&lit));
-            }
-                current++;
                 
-                if (current > tokens.size()+1) {
-                    error(UnexpectedToken, tokens[tokens.size()-1]);
-                }
+                expressions.push_back(Expression(lit));
+            } else if (tokens[current].type == Punctuation) {
+                op = tokens[current].value;
+            }
+            current++;
         }
-        
+        for (int i = 0; i < expressions.size(); i++) {
+            std::cout<<expressions[i].type<<std::endl;
+        }
         return Statement(expressions[0]);
     }
 
@@ -546,7 +707,7 @@ private:
                 vartable[sanitize(Identifier)] = -1;
                 current++; // Skip identifier
                 if (tokens[current].value != ";") {
-                        current-=5;
+                        current-=2;
                         return Statement(parseExpression());
                     }
                 current++; // Skip ";"
@@ -989,7 +1150,7 @@ private:
 
 int main(int argc, char* argv[]) {
 
-    std::string sourceCode = "auto x[4] = [10, 13, 15, 16];";
+    std::string sourceCode = "auto x = 2";
 
     Lexer lexer(sourceCode);
     std::vector<Token> tokens = lexer.tokenize();
@@ -1003,4 +1164,7 @@ int main(int argc, char* argv[]) {
     Parser parser(tokens);
     std::vector<Statement> ast = parser.parse();
 
+    for (int i = 0; i < ast.size(); i++) {
+        printNode(ast[i], 0);
+    }
 }
