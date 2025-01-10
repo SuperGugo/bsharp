@@ -34,5 +34,6 @@
 # Idiotic text editor
 .vscode/
 
-# WIP
-std.*
+# Internal files
+*.bs
+*.h

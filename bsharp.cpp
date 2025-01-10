@@ -86,14 +86,13 @@ struct VariableReference {
         Pointer,
         Member // what i called NoVar in the other compiler. it's whenever the position is an expression (pointed by to AX/R1, i'd assume)
     } type;
-
-    int scope;
-
+    
     std::string identifier;
+    std::vector<int> scope;
     Expression position; // it's usually a literal for Values and Pointers! it's another VariableReference of type Value for References, and something else for Members.
     VariableReference() {};
-    VariableReference(std::string identifier, Expression position, int scope) : type(Member), identifier(identifier), position(position), scope(scope) {};
-    VariableReference(std::string identifier, Type type, int scope) : type(type), identifier(identifier), position(position), scope(scope) {};
+    VariableReference(std::string identifier, Expression position, std::vector<int> scope) : type(Member), identifier(identifier), position(position), scope(scope) {};
+    VariableReference(std::string identifier, Type type, std::vector<int> scope) : type(type), identifier(identifier), position(position), scope(scope) {};
 };
 
 struct Assignment { // remember! assignments ALWAYS return the variable after assignment, even x++ (it is no different from ++x)
@@ -218,7 +217,11 @@ enum ErrorType {
     // Parser
     InvalidCase,
     ReservedIdentifier,
-    UnexpectedToken // literally heaven and earth
+    UnexpectedToken, // literally heaven and earth
+    UndefinedVariable,
+    UndefinedFunction,
+    VariableAlreadyDefined,
+    FunctionAlreadyDefined // overloading is not allowed
 };
 
 void error(ErrorType err, Token token) {
@@ -248,11 +251,23 @@ void error(ErrorType err, Token token) {
         case UnexpectedToken:
             std::cerr << "Unexpected token: " << token.value << std::endl;
             break;
+        case UndefinedVariable:
+            std::cerr << "Undefined variable: " << token.value << std::endl;
+            break;
+        case UndefinedFunction:
+            std::cerr << "Undefined function: " << token.value << std::endl;
+            break;
+        case VariableAlreadyDefined:
+            std::cerr << "Variable is already defined: " << token.value << std::endl;
+            break;
+        case FunctionAlreadyDefined:
+            std::cerr << "Function is already defined: " << token.value << std::endl;
+            break;
     }
     exit(1);
 }
 
-std::map<std::string, int> vartable; // only global variables. for extrn, the int is -1, and is solved at linking time.
+std::map<std::string, std::vector<int>> vartable; // only global variables. for extrn, the int is -1, and is solved at linking time.
 std::vector<std::string> funtable;
 
 
@@ -296,7 +311,11 @@ void printExpression(Expression exp, int indent) {
                 case 0:
                 {
                     std::cout << std::string(indent, ' ') << "Variable: " << x.identifier << std::endl;
-                    std::cout << std::string(indent+2, ' ') << "Scope: " << x.scope << std::endl;
+                    std::cout << std::string(indent+2, ' ') << "Scope: ";
+                    for (int i = 0; i < x.scope.size(); i++) {
+                        std::cout << x.scope[i] << " -> ";
+                    }
+                    std::cout<<"\b\b\b\b   \n";
                     break;
                 }
                 case 1:
@@ -470,7 +489,7 @@ void printNode(Statement statement, int indent) {
 
 class Parser {
 public:
-    Parser(const std::vector<Token>& tokens) : tokens(tokens), current(0), scope(0) {}
+    Parser(const std::vector<Token>& tokens) : tokens(tokens), current(0), scope(0), scopeTree({0}) {}
     std::vector<Statement> parse() {
         std::vector<Statement> ast;
         while (current < tokens.size() && tokens[current].type != EoF) {
@@ -481,7 +500,8 @@ public:
 private:
     const std::vector<Token>& tokens;
     size_t current;
-    size_t scope;
+    int scope;
+    std::vector<int> scopeTree;
     
     // If the current token is of the right type, its value is returned. Otherwise, an error is thrown.
     std::string sanitize(TokenType type) {
@@ -501,6 +521,25 @@ private:
                 error(UnexpectedToken, tokens[current]);
         }
         current++;
+    }
+
+    void checkVariable(bool definition = true) {
+        if (definition) {
+            if (vartable.find(tokens[current].value) != vartable.end()) {
+                std::vector s = vartable[tokens[current].value];
+                if (std::find(s.begin(), s.end(), scopeTree.back()) != s.end()) {
+                    error(VariableAlreadyDefined, tokens[current]);
+                }
+            }
+        } else {
+            if (vartable.find(tokens[current].value) == vartable.end()) {
+                error(UndefinedVariable, tokens[current]);
+            }
+            std::vector s = vartable[tokens[current].value];
+            if (std::find(s.begin(), s.end(), scopeTree.back()) == s.end()) {
+                error(UndefinedVariable, tokens[current]);
+            }
+        }
     }
 
     Statement parseStatement() {
@@ -538,6 +577,9 @@ private:
                 std::cout<<"Function call"<<std::endl;
                 FunctionCall* ret = new FunctionCall();
                 ret->identifier = tokens[current++].value;
+                if (std::find(funtable.begin(), funtable.end(), ret->identifier) == funtable.end()) {
+                    error(UndefinedFunction, tokens[current-1]);
+                }
                 current++; // Skip "("
                 while (tokens[current].value != ")") {
                     ret->arguments.push_back(parseExpression().expression);
@@ -548,7 +590,7 @@ private:
                 expressions.push_back(ret);
             } else if (tokens[current+1].value == "=") {
                 // Assignment
-                VariableReference var = VariableReference(tokens[current++].value, VariableReference::Value, 0);
+                VariableReference var = parseIdentifier();
                 current++; // Skip "="
                 Expression value = parseExpression().expression;
                 
@@ -560,7 +602,7 @@ private:
                 break;
             } else if (std::find(std::begin(augment), std::end(augment), tokens[current+1].value) != std::end(augment)) {
                 // Augmented assignment
-                VariableReference* var = new VariableReference(tokens[current++].value, VariableReference::Value, 0);
+                VariableReference* var = new VariableReference(parseIdentifier());
                 std::string operation(1, tokens[current].value[0]);
                 Operation* value = new Operation();
                 value->a = Expression(var);
@@ -586,7 +628,7 @@ private:
             } else if (tokens[current].value == "auto" || tokens[current].value == "static") {
                 // Assignment coming from declaration
                 current++; // Skip storage duration
-                VariableReference var = VariableReference(tokens[current++].value, VariableReference::Value, 0);
+                VariableReference var = parseIdentifier();
                 while (tokens[current].value != "=") current++;
                 current++; // Skip "="
                 Expression value = parseExpression().expression;
@@ -608,7 +650,7 @@ private:
                 // Literal
                 LiteralExpression* lit = new LiteralExpression();
 
-                if (isdigit(tokens[current].value[0])) {
+                if (isdigit(tokens[current].value[0]) || tokens[current].value[0] == '-') {
                     *lit = LiteralExpression(stoi(tokens[current].value)); // TODO: floats
                 } else {
                     skip("'");
@@ -646,10 +688,11 @@ private:
         Block* ret = new Block();
         current++; // Skip "{"
         scope++;
+        scopeTree.push_back(scope);
         while (tokens[current].value != "}") {
             ret->statements.push_back(parseStatement());
         }
-        scope--;
+        scopeTree.pop_back();
         current++; // Skip "}"
         return Statement(ret);
     }
@@ -658,8 +701,13 @@ private:
         FunctionDefinition* ret = new FunctionDefinition();
         current++; // Skip "fn"
         ret->identifier = tokens[current++].value;
+        if (std::find(funtable.begin(), funtable.end(), ret->identifier) != funtable.end()) {
+            error(FunctionAlreadyDefined, tokens[current-1]);
+        }
+        funtable.push_back(ret->identifier);
         skip("("); // Skip "("
         while (tokens[current].value != ")") {
+            vartable[tokens[current].value] = {0, scope+1};
             ret->parameters.push_back(tokens[current++].value);
             if (tokens[current].value == ",") {
                 current++; // Skip ","
@@ -780,27 +828,29 @@ private:
                 current++; // Skip identifier
                 skip(";");
             } else {
+                checkVariable();
                 if (tokens[current+1].value == "[") {
                     std::string id = sanitize(Identifier);
-                    vartable[id] = 0;
+                    vartable[id] = {0};
                     current++; // Skip identifier 
                     current++; // Skip "["
                     for (int i = 1; i < stoi(sanitize(Literal)); i++) {
-                        vartable[id + std::to_string(i)] = 0;
+                        vartable[id + std::to_string(i)] = {0};
                     }
                     current++; // Skip the number inside the brackets
                     current++; // Skip "]"
                     skip(";");
                 } else {
-                    vartable[sanitize(Identifier)] = 0;
+                    vartable[sanitize(Identifier)] = {0};
                     current++; // Skip identifier
                     skip(";");
                 }
             }
         } else if (duration == "static") {
+            checkVariable();
             if (tokens[current+1].value == "[") {
                 std::string id = sanitize(Identifier);
-                vartable[id] = 0;
+                vartable[id] = {0};
                 current++; // Skip identifier 
                 current++; // Skip "["'
                 
@@ -810,7 +860,7 @@ private:
                     current++; // Skip "="
                     LiteralExpression arr = parseArray();
                     for (int i = 1; i < arr.array.size(); i++) {
-                        vartable[id + std::to_string(i)] = 0;
+                        vartable[id + std::to_string(i)] = {0};
                     }
                     current = startpos;
                     print
@@ -819,7 +869,7 @@ private:
                     return ret;
                 } else {
                     for (int i = 1; i < stoi(sanitize(Literal)); i++) {
-                        vartable[id + std::to_string(i)] = 0;
+                        vartable[id + std::to_string(i)] = {0};
                     }
                     current++; // Skip the number inside the brackets
                     current++; // Skip "]"
@@ -832,7 +882,7 @@ private:
                 }
                 current++; // Skip ";"
             } else {
-                vartable[sanitize(Identifier)] = 0;
+                vartable[sanitize(Identifier)] = {0};
                 current++; // Skip identifier
                 if (tokens[current].value != ";") {
                         current = startpos;
@@ -843,9 +893,16 @@ private:
                 current++; // Skip ";"
             }
         } else if (duration == "auto") {
+            checkVariable();
             if (tokens[current+1].value == "[") {
                 std::string id = sanitize(Identifier);
-                vartable[id] = scope;
+                for (int i = 1; i < stoi(sanitize(Literal)); i++) {
+                    if (scopeTree.size()==1) {
+                        vartable[id] = {0};
+                    } else {
+                        vartable[id] = scopeTree;
+                    }
+                }
                 current++; // Skip identifier 
                 current++; // Skip "["'
                 
@@ -855,7 +912,7 @@ private:
                     current++; // Skip "="
                     LiteralExpression arr = parseArray();
                     for (int i = 1; i < arr.array.size(); i++) {
-                        vartable[id + std::to_string(i)] = scope;
+                        vartable[id + std::to_string(i)] = scopeTree;
                     }
                     current = startpos;
                     print
@@ -864,7 +921,11 @@ private:
                     return ret;
                 } else {
                     for (int i = 1; i < stoi(sanitize(Literal)); i++) {
-                        vartable[id + std::to_string(i)] = scope;
+                        if (scopeTree.size()==1) {
+                            vartable[id + std::to_string(i)] = {0};
+                        } else {
+                            vartable[id + std::to_string(i)] = scopeTree;
+                        }
                     }
                     current++; // Skip the number inside the brackets
                     current++; // Skip "]"
@@ -877,7 +938,11 @@ private:
                 }
                 current++; // Skip ";"
             } else {
-                vartable[sanitize(Identifier)] = scope;
+                if (scopeTree.size()==1) {
+                    vartable[sanitize(Identifier)] = {0};
+                } else {
+                    vartable[sanitize(Identifier)] = scopeTree;
+                }
                 current++; // Skip identifier
                 if (tokens[current].value != ";") {
                         current = startpos;
@@ -897,27 +962,28 @@ VariableReference Parser::parseIdentifier() {
         // pointers, all of pointers.
         current++; // Skip "*"
         if (tokens[current].type == Identifier) {
-            if (vartable.find(tokens[current].value) != vartable.end()) {
-                return VariableReference(tokens[current++].value, VariableReference::Pointer, 0);
-            } else {
-                // Either local or doesn't exist. TODO: handle when i handle local (stack) variables.
-            }
+            checkVariable(false);
+            VariableReference var = VariableReference(tokens[current].value, VariableReference::Pointer, scopeTree);
+            current++;
+            return var;
         } else {
             // "member"
-            return VariableReference(tokens[current++].value, parseExpression().expression, 0);
+            return VariableReference("", parseExpression().expression, {0});
         }
     } else if (tokens[current].value == "&") {
         // reference
         current++; // Skip "&"
-        if (vartable.find(tokens[current].value) != vartable.end()) {
-                return VariableReference(tokens[current++].value, VariableReference::Reference, 0);
-            } else {
-                // Either local or doesn't exist. TODO: handle when i handle local (stack) variables.
-            }
+        checkVariable(false);
+        VariableReference var = VariableReference(tokens[current].value, VariableReference::Reference, scopeTree);
+        current++;
+        return var;
     } else {
         // value
         std::string id = sanitize(Identifier);
-        return VariableReference(tokens[current++].value, VariableReference::Value, 0);
+        checkVariable(false);
+        VariableReference var = VariableReference(tokens[current].value, VariableReference::Value, scopeTree);
+        current++;
+        return var;
     }
     return VariableReference(); // to make gcc shut the fuck up here too
 }
@@ -1323,8 +1389,17 @@ private:
 };
 
 int main(int argc, char* argv[]) {
+    std::string sourceCode = "";
 
-    std::string sourceCode = "switch (x) {case 1: {x = 1;} case 2: {z = 2;} default: {z = 6;}}";
+    if (argc > 1) {
+        std::ifstream f(argv[1]);
+        if (!f.is_open()) {
+            error(FileNotFound, {Keyword, argv[1], 0, 0});
+        }
+        std::stringstream buffer;
+        buffer << f.rdbuf(); 
+        sourceCode = buffer.str();
+    }
 
     Lexer lexer(sourceCode);
     std::vector<Token> tokens = lexer.tokenize();
