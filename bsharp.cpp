@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <map>
 #include <memory>
+#include <iomanip>
+
 #define print std::cout<<tokens[current].value<<std::endl;
 enum TokenType {
     Keyword,
@@ -224,20 +226,32 @@ enum ErrorType {
     FunctionAlreadyDefined // overloading is not allowed
 };
 
+
+std::map<std::string, std::vector<int>> vartable; // only global variables. for extrn, the int is -1, and is solved at linking time.
+std::vector<std::string> funtable;
+std::string sourceCode;
+std::string filename;
+
 void error(ErrorType err, Token token) {
-    std::cerr << "Error at line " << token.line << ", column " << token.column << ": " << std::endl;
+    // 3 is italic, 1 is bold, 4 is underline
+    // 30 is black, 97 is white, 91 is red, 94 is blue
+    std::cerr<<"\033[3;94m"<<filename<<"\033[0;97m at \033[1;93m"<<token.line+1<<":"<<token.column+1<<"\033[1;91m Fatal error: \033[0;97m";
     switch (err) {
         case PunctuationNotMatched:
-            std::cerr << "Punctuation not matched: " << token.value << " not closed" << std::endl;
+            std::cerr << token.value << ": unmatched punctuation" << std::endl;
             break;
         case UnexpectedEOF:
-            std::cerr << "Unexpected EoF" << std::endl;
+            std::cerr << "unexpected EoF" << std::endl;
             break;
         case InvalidPreprocessingDirective:
-            std::cerr << "Invalid preprocessing directive: " << token.value << std::endl;
+            std::cerr << token.value << ": invalid preprocessing directive" << std::endl;
             break;
         case BadMacroName:
-            std::cerr << "Macro names must be identifiers" << std::endl;
+            if (token.value != "") {
+                std::cerr << token.value << ": macro names must be identifiers" << std::endl;
+            } else {
+                std::cerr << "macro names must be identifiers" << std::endl;
+            }
             break;
         case FileNotFound:
             std::cerr << token.value << ": no such file or directory" << std::endl;
@@ -249,27 +263,39 @@ void error(ErrorType err, Token token) {
             std::cerr << token.value << ": identifier is a reserved keyword" << std::endl;
             break;
         case UnexpectedToken:
-            std::cerr << "Unexpected token: " << token.value << std::endl;
+            std::cerr << "unexpected token: " << token.value << std::endl;
             break;
         case UndefinedVariable:
-            std::cerr << "Undefined variable: " << token.value << std::endl;
+            std::cerr << "undefined variable: " << token.value << std::endl;
             break;
         case UndefinedFunction:
-            std::cerr << "Undefined function: " << token.value << std::endl;
+            std::cerr << "undefined function: " << token.value << std::endl;
             break;
         case VariableAlreadyDefined:
-            std::cerr << "Variable is already defined: " << token.value << std::endl;
+            std::cerr << "variable is already defined: " << token.value << std::endl;
             break;
         case FunctionAlreadyDefined:
-            std::cerr << "Function is already defined: " << token.value << std::endl;
+            std::cerr << "function is already defined: " << token.value << std::endl;
             break;
     }
+    std::istringstream stream(sourceCode);
+    std::string s;
+    for (int i = 0; i <= token.line; i++) {
+        std::getline(stream, s);
+    }
+    std::cerr<<"\033[93m"<<std::setw(5)<<token.line+1<<"\033[97m | ";
+    for (int i = 0; i < s.length(); i++) {
+        if (i == token.column) {
+            std::cerr<<"\033[1;4m";
+        }
+        if (i == token.column + token.value.length()) {
+            std::cerr<<"\033[0m";
+        }
+        std::cerr<<s[i];
+    }
+    std::cerr<<std::endl;
     exit(1);
 }
-
-std::map<std::string, std::vector<int>> vartable; // only global variables. for extrn, the int is -1, and is solved at linking time.
-std::vector<std::string> funtable;
-
 
 // DEBUG PURPOSES ONLY!
 void printExpression(Expression exp, int indent) {
@@ -523,11 +549,24 @@ private:
         current++;
     }
 
+    bool matchScope(std::vector<int> toMatch) {
+        std::vector<int> a, b;
+        if (toMatch.size() > scopeTree.size()) {
+            return false;
+        }
+        for (int i = 0; i < a.size(); ++i) {
+            if (a[i] != b[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void checkVariable(bool definition = true) {
         if (definition) {
             if (vartable.find(tokens[current].value) != vartable.end()) {
                 std::vector s = vartable[tokens[current].value];
-                if (std::find(s.begin(), s.end(), scopeTree.back()) != s.end()) {
+                if (matchScope(s)) {
                     error(VariableAlreadyDefined, tokens[current]);
                 }
             }
@@ -536,7 +575,7 @@ private:
                 error(UndefinedVariable, tokens[current]);
             }
             std::vector s = vartable[tokens[current].value];
-            if (std::find(s.begin(), s.end(), scopeTree.back()) == s.end()) {
+            if (!matchScope(s)) {
                 error(UndefinedVariable, tokens[current]);
             }
         }
@@ -558,7 +597,7 @@ private:
         else if (tokens[current].value == "fn")         return parseFunctionDefinition();
         else if (tokens[current].value == ";")          {current++; return Statement(new Block());}
         else if (tokens[current].type == EoF)           error(UnexpectedEOF, tokens[current]);
-        else                                            return parseExpression();
+        else                                            {Statement ret = parseExpression(); if (tokens[current].value==";") current++; return ret;}
         return Statement(); // to make gcc SHUT THE FUCK UP ABOUT CONTROL REACHING END OF NON-VOID FUNCTION. ITS NOT GONNA HAPPEN.
     }
 
@@ -574,7 +613,6 @@ private:
         
         while (tokens[current].value != ";" && tokens[current].value != ")" && tokens[current].value != "," && tokens[current].value != "]" && current < tokens.size()-1) {
             if (tokens[current].type == Identifier && tokens[current+1].value == "(") {
-                std::cout<<"Function call"<<std::endl;
                 FunctionCall* ret = new FunctionCall();
                 ret->identifier = tokens[current++].value;
                 if (std::find(funtable.begin(), funtable.end(), ret->identifier) == funtable.end()) {
@@ -586,7 +624,6 @@ private:
                     if (tokens[current].value == ",") current++; // Skip the commas
                 }
                 current++; // Skip ")"
-                current++; // Skip ";"
                 expressions.push_back(ret);
             } else if (tokens[current+1].value == "=") {
                 // Assignment
@@ -597,7 +634,6 @@ private:
                 Assignment* ret = new Assignment();
                 ret->variable = var;
                 ret->value = value;
-                if (tokens[current].value == ";") current++;
                 expressions.push_back(ret);
                 break;
             } else if (std::find(std::begin(augment), std::end(augment), tokens[current+1].value) != std::end(augment)) {
@@ -622,7 +658,6 @@ private:
                 ret->variable = *var;
                 value->operation = operation;
                 ret->value = Expression(value);
-                if (tokens[current].value == ";") current++;
                 expressions.push_back(ret);
                 break;
             } else if (tokens[current].value == "auto" || tokens[current].value == "static") {
@@ -672,6 +707,9 @@ private:
         if (expressions.size() == 1) {
             return Statement(expressions[0]);
         } else if (expressions.size() == 2) {
+            if (op == "") {
+                error(UnexpectedToken, tokens[current-1]);
+            }
             Operation* ret = new Operation(expressions[0], expressions[1], op);
             return Statement(Expression(ret));
         } else {
@@ -747,17 +785,23 @@ private:
                 int cs = stoi(tokens[current++].value);
                 current++; // Skip ":"
                 Block* switchblock = new Block();
+                scope++;
+                scopeTree.push_back(scope);
                 while (tokens[current].value != "case" && tokens[current].value != "default" && tokens[current].value != "}") {
                     switchblock->statements.push_back(parseStatement());
                 }
+                scopeTree.pop_back();
                 ret->branches[cs] = Statement(switchblock);
             } else if (tokens[current].value == "default") {
                 current++; // Skip "default"
                 current++; // Skip ":"
                 Block* switchblock = new Block();
+                scope++;
+                scopeTree.push_back(scope);
                 while (tokens[current].value != "case" && tokens[current].value != "}") {
                     switchblock->statements.push_back(parseStatement());
                 }
+                scopeTree.pop_back();
                 ret->defaultPresent = true;
                 ret->defaultBranch = Statement(switchblock);
             }
@@ -1125,7 +1169,7 @@ public:
                 } else if (source[currentPos+1] == '=') {
                     tokens.push_back({Punctuation, "-=", line, column});
                     column++; currentPos++;
-                } else if (isdigit(source[currentPos+1])) {
+                } else if (isdigit(source[currentPos+1]) && tokens[tokens.size()-1].type != Identifier) {
                     column++; currentPos++;
                     tokens.push_back(number(true));
                     column--; currentPos--;
@@ -1251,6 +1295,7 @@ public:
             }
         }
         tokens.push_back({EoF, "", line, column});
+        sourceCode = source;
         return tokens;
     }
 
@@ -1352,14 +1397,14 @@ private:
         }
         if (directives[0] == "define") {
             if (directives.size() < 2) {
-                    error(BadMacroName, {Identifier, "", line, 0});
+                    error(BadMacroName, {Identifier, "", line-1, 0});
             }
             if (isalpha(directives[1][0]) || directives[1][0] == '_') {
                 if (directives.size() > 2) {
                     macros[directives[1]] = directives[2];
                 }
             } else {
-                error(BadMacroName, {Identifier, directives[1], line, 0});
+                error(BadMacroName, {Identifier, directives[1], line-1, 0});
             }
         } else if (directives[0] == "undef") {
             if (directives.size() < 2) {
@@ -1371,30 +1416,30 @@ private:
                 }
             }
         } else if (directives[0] == "include") {
-            if (directives.size() < 2) {
-                error(FileNotFound, {Identifier, "", line, 0});
+            if (directives.size() < 2 || directives[1][0] == '\n' || directives[1][0] == ' ') {
+                error(FileNotFound, {Identifier, "", line-1, 0});
             }
             std::ifstream include(directives[1]);
             if (!include.is_open()) {
-                error(FileNotFound, {Identifier, directives[1], line, 0});
+                error(FileNotFound, {Identifier, directives[1], line-1, 0});
             }
             std::stringstream buffer;
             buffer << include.rdbuf(); 
-            source.insert(currentPos, buffer.str());
+            source.insert(currentPos, buffer.str()+"\n");
         } else {
             // TODO: conditional!
-            error(InvalidPreprocessingDirective, {Keyword, directives[0], line, 0});
+            error(InvalidPreprocessingDirective, {Keyword, directives[0], line-1, 1});
         }
     }
 };
 
 int main(int argc, char* argv[]) {
-    std::string sourceCode = "";
-
     if (argc > 1) {
-        std::ifstream f(argv[1]);
+        filename = argv[1];
+        std::ifstream f(filename);
         if (!f.is_open()) {
-            error(FileNotFound, {Keyword, argv[1], 0, 0});
+            std::cerr<<filename<<": No such file or directory."<<std::endl;
+            exit(1);
         }
         std::stringstream buffer;
         buffer << f.rdbuf(); 
