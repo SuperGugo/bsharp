@@ -87,16 +87,13 @@ struct VariableReference {
         Member // what i called NoVar in the other compiler. it's whenever the position is an expression (pointed by to AX/R1, i'd assume)
     } type;
 
-    enum Scope {
-        Global,
-        Local
-    } scope;
+    int scope;
 
     std::string identifier;
     Expression position; // it's usually a literal for Values and Pointers! it's another VariableReference of type Value for References, and something else for Members.
     VariableReference() {};
-    VariableReference(std::string identifier, Expression position, Scope scope) : type(Member), identifier(identifier), position(position), scope(scope) {};
-    VariableReference(std::string identifier, Type type, Scope scope) : type(type), identifier(identifier), position(position), scope(scope) {};
+    VariableReference(std::string identifier, Expression position, int scope) : type(Member), identifier(identifier), position(position), scope(scope) {};
+    VariableReference(std::string identifier, Type type, int scope) : type(type), identifier(identifier), position(position), scope(scope) {};
 };
 
 struct Assignment { // remember! assignments ALWAYS return the variable after assignment, even x++ (it is no different from ++x)
@@ -473,7 +470,7 @@ void printNode(Statement statement, int indent) {
 
 class Parser {
 public:
-    Parser(const std::vector<Token>& tokens) : tokens(tokens), current(0) {}
+    Parser(const std::vector<Token>& tokens) : tokens(tokens), current(0), scope(0) {}
     std::vector<Statement> parse() {
         std::vector<Statement> ast;
         while (current < tokens.size() && tokens[current].type != EoF) {
@@ -484,6 +481,7 @@ public:
 private:
     const std::vector<Token>& tokens;
     size_t current;
+    size_t scope;
     
     // If the current token is of the right type, its value is returned. Otherwise, an error is thrown.
     std::string sanitize(TokenType type) {
@@ -550,7 +548,7 @@ private:
                 expressions.push_back(ret);
             } else if (tokens[current+1].value == "=") {
                 // Assignment
-                VariableReference var = VariableReference(tokens[current++].value, VariableReference::Value, VariableReference::Global);
+                VariableReference var = VariableReference(tokens[current++].value, VariableReference::Value, 0);
                 current++; // Skip "="
                 Expression value = parseExpression().expression;
                 
@@ -562,7 +560,7 @@ private:
                 break;
             } else if (std::find(std::begin(augment), std::end(augment), tokens[current+1].value) != std::end(augment)) {
                 // Augmented assignment
-                VariableReference* var = new VariableReference(tokens[current++].value, VariableReference::Value, VariableReference::Global);
+                VariableReference* var = new VariableReference(tokens[current++].value, VariableReference::Value, 0);
                 std::string operation(1, tokens[current].value[0]);
                 Operation* value = new Operation();
                 value->a = Expression(var);
@@ -588,7 +586,7 @@ private:
             } else if (tokens[current].value == "auto" || tokens[current].value == "static") {
                 // Assignment coming from declaration
                 current++; // Skip storage duration
-                VariableReference var = VariableReference(tokens[current++].value, VariableReference::Value, VariableReference::Global);
+                VariableReference var = VariableReference(tokens[current++].value, VariableReference::Value, 0);
                 while (tokens[current].value != "=") current++;
                 current++; // Skip "="
                 Expression value = parseExpression().expression;
@@ -647,9 +645,11 @@ private:
     Statement parseBlock() {
         Block* ret = new Block();
         current++; // Skip "{"
+        scope++;
         while (tokens[current].value != "}") {
             ret->statements.push_back(parseStatement());
         }
+        scope--;
         current++; // Skip "}"
         return Statement(ret);
     }
@@ -782,17 +782,17 @@ private:
             } else {
                 if (tokens[current+1].value == "[") {
                     std::string id = sanitize(Identifier);
-                    vartable[id] = -1;
+                    vartable[id] = 0;
                     current++; // Skip identifier 
                     current++; // Skip "["
                     for (int i = 1; i < stoi(sanitize(Literal)); i++) {
-                        vartable[id + std::to_string(i)] = -1;
+                        vartable[id + std::to_string(i)] = 0;
                     }
                     current++; // Skip the number inside the brackets
                     current++; // Skip "]"
                     skip(";");
                 } else {
-                    vartable[sanitize(Identifier)] = -1;
+                    vartable[sanitize(Identifier)] = 0;
                     current++; // Skip identifier
                     skip(";");
                 }
@@ -800,7 +800,7 @@ private:
         } else if (duration == "static") {
             if (tokens[current+1].value == "[") {
                 std::string id = sanitize(Identifier);
-                vartable[id] = -1;
+                vartable[id] = 0;
                 current++; // Skip identifier 
                 current++; // Skip "["'
                 
@@ -810,7 +810,7 @@ private:
                     current++; // Skip "="
                     LiteralExpression arr = parseArray();
                     for (int i = 1; i < arr.array.size(); i++) {
-                        vartable[id + std::to_string(i)] = -1;
+                        vartable[id + std::to_string(i)] = 0;
                     }
                     current = startpos;
                     print
@@ -819,7 +819,7 @@ private:
                     return ret;
                 } else {
                     for (int i = 1; i < stoi(sanitize(Literal)); i++) {
-                        vartable[id + std::to_string(i)] = -1;
+                        vartable[id + std::to_string(i)] = 0;
                     }
                     current++; // Skip the number inside the brackets
                     current++; // Skip "]"
@@ -830,11 +830,9 @@ private:
                         return ret;
                     }
                 }
-                
-                
                 current++; // Skip ";"
             } else {
-                vartable[sanitize(Identifier)] = -1;
+                vartable[sanitize(Identifier)] = 0;
                 current++; // Skip identifier
                 if (tokens[current].value != ";") {
                         current = startpos;
@@ -847,7 +845,7 @@ private:
         } else if (duration == "auto") {
             if (tokens[current+1].value == "[") {
                 std::string id = sanitize(Identifier);
-                vartable[id] = -1;
+                vartable[id] = scope;
                 current++; // Skip identifier 
                 current++; // Skip "["'
                 
@@ -857,7 +855,7 @@ private:
                     current++; // Skip "="
                     LiteralExpression arr = parseArray();
                     for (int i = 1; i < arr.array.size(); i++) {
-                        vartable[id + std::to_string(i)] = -1;
+                        vartable[id + std::to_string(i)] = scope;
                     }
                     current = startpos;
                     print
@@ -866,7 +864,7 @@ private:
                     return ret;
                 } else {
                     for (int i = 1; i < stoi(sanitize(Literal)); i++) {
-                        vartable[id + std::to_string(i)] = -1;
+                        vartable[id + std::to_string(i)] = scope;
                     }
                     current++; // Skip the number inside the brackets
                     current++; // Skip "]"
@@ -877,11 +875,9 @@ private:
                         return ret;
                     }
                 }
-                
-                
                 current++; // Skip ";"
             } else {
-                vartable[sanitize(Identifier)] = -1;
+                vartable[sanitize(Identifier)] = scope;
                 current++; // Skip identifier
                 if (tokens[current].value != ";") {
                         current = startpos;
@@ -891,7 +887,6 @@ private:
                     }
                 current++; // Skip ";"
             }
-            // TODO: handle auto variables (stack, also heap)
         }
         return Statement();
     }
@@ -903,26 +898,26 @@ VariableReference Parser::parseIdentifier() {
         current++; // Skip "*"
         if (tokens[current].type == Identifier) {
             if (vartable.find(tokens[current].value) != vartable.end()) {
-                return VariableReference(tokens[current++].value, VariableReference::Pointer, VariableReference::Global);
+                return VariableReference(tokens[current++].value, VariableReference::Pointer, 0);
             } else {
                 // Either local or doesn't exist. TODO: handle when i handle local (stack) variables.
             }
         } else {
             // "member"
-            return VariableReference(tokens[current++].value, parseExpression().expression, VariableReference::Global);
+            return VariableReference(tokens[current++].value, parseExpression().expression, 0);
         }
     } else if (tokens[current].value == "&") {
         // reference
         current++; // Skip "&"
         if (vartable.find(tokens[current].value) != vartable.end()) {
-                return VariableReference(tokens[current++].value, VariableReference::Reference, VariableReference::Global);
+                return VariableReference(tokens[current++].value, VariableReference::Reference, 0);
             } else {
                 // Either local or doesn't exist. TODO: handle when i handle local (stack) variables.
             }
     } else {
         // value
         std::string id = sanitize(Identifier);
-        return VariableReference(tokens[current++].value, VariableReference::Value, VariableReference::Global);
+        return VariableReference(tokens[current++].value, VariableReference::Value, 0);
     }
     return VariableReference(); // to make gcc shut the fuck up here too
 }
