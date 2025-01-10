@@ -940,6 +940,9 @@ private:
             checkVariable();
             if (tokens[current+1].value == "[") {
                 std::string id = sanitize(Identifier);
+                current++; // Skip identifier 
+                current++; // Skip "["'
+                
                 for (int i = 1; i < stoi(sanitize(Literal)); i++) {
                     if (scopeTree.size()==1) {
                         vartable[id] = {0};
@@ -947,8 +950,6 @@ private:
                         vartable[id] = scopeTree;
                     }
                 }
-                current++; // Skip identifier 
-                current++; // Skip "["'
                 
                 if (tokens[current].value == "]") {
                     current++; // Skip "]"
@@ -1047,6 +1048,7 @@ LiteralExpression Parser::parseArray() {
         for (int i = 0; i < tokens[current].value.length(); i++) {
             lit.array.push_back(new LiteralExpression(tokens[current].value[i]));
         }
+        current++; // Skip the string itself
         current++; // Skip "\""
     } else {
         error(UnexpectedToken, tokens[current]);
@@ -1459,5 +1461,14 @@ int main(int argc, char* argv[]) {
     std::vector<Statement> ast = parser.parse();
     for (int i = 0; i < ast.size(); i++) {
         printNode(ast[i], 0);
+    }
+
+    for (const auto& pair : vartable) {
+        std::cout<<"Variable name: "<<pair.first<<"\t";
+        std::cout << "Scope: ";
+        for (int i = 0; i < pair.second.size(); i++) {
+            std::cout << pair.second[i] << " -> ";
+        }
+        std::cout<<"\b\b\b\b   \n";
     }
 }
