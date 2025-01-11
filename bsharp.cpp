@@ -47,12 +47,12 @@ struct Expression {
         FunctionCallType
     } type;
 
-    LiteralExpression* literalExpression;
-    VariableReference* variableReference;
-    Assignment* assignment;
-    Operation* operation;
-    TernaryOperation* ternaryOperation;
-    FunctionCall* functionCall;
+    std::shared_ptr<LiteralExpression> literalExpression;
+    std::shared_ptr<VariableReference> variableReference;
+    std::shared_ptr<Assignment> assignment;
+    std::shared_ptr<Operation> operation;
+    std::shared_ptr<TernaryOperation> ternaryOperation;
+    std::shared_ptr<FunctionCall> functionCall;
 
     Expression() {};
     Expression(LiteralExpression* literalExpression) : type(LiteralExpressionType), literalExpression(literalExpression) {};
@@ -93,8 +93,8 @@ struct VariableReference {
     std::vector<int> scope;
     Expression position; // it's usually a literal for Values and Pointers! it's another VariableReference of type Value for References, and something else for Members.
     VariableReference() {};
-    VariableReference(std::string identifier, Expression position, std::vector<int> scope) : type(Member), identifier(identifier), position(position), scope(scope) {};
-    VariableReference(std::string identifier, Type type, std::vector<int> scope) : type(type), identifier(identifier), position(position), scope(scope) {};
+    VariableReference(Expression position, std::vector<int> scope) : type(Member), identifier(identifier), position(position), scope(scope) {};
+    VariableReference(std::string identifier, Type type, std::vector<int> scope) : type(type), identifier(identifier), scope(scope) {};
 };
 
 struct Assignment { // remember! assignments ALWAYS return the variable after assignment, even x++ (it is no different from ++x)
@@ -143,14 +143,14 @@ struct Statement {
     } type;
 
     Expression expression;
-    Block* block;
-    FunctionDefinition* functionDefinition;
-    IfStatement* ifStatement;
-    SwitchStatement* switchStatement;
-    WhileLoop* whileLoop;
-    ForLoop* forLoop;
-    ReturnCall* returnCall;
-    BreakCall* breakCall;
+    std::shared_ptr<Block> block;
+    std::shared_ptr<FunctionDefinition> functionDefinition;
+    std::shared_ptr<IfStatement> ifStatement;
+    std::shared_ptr<SwitchStatement> switchStatement;
+    std::shared_ptr<WhileLoop> whileLoop;
+    std::shared_ptr<ForLoop> forLoop;
+    std::shared_ptr<ReturnCall> returnCall;
+    std::shared_ptr<BreakCall> breakCall;
 
     Statement() : type(Other) {};
     Statement(Expression expression) : type(ExpressionType), expression(expression) {};
@@ -337,11 +337,6 @@ void printExpression(Expression exp, int indent) {
                 case 0:
                 {
                     std::cout << std::string(indent, ' ') << "Variable: " << x.identifier << std::endl;
-                    std::cout << std::string(indent+2, ' ') << "Scope: ";
-                    for (int i = 0; i < x.scope.size(); i++) {
-                        std::cout << x.scope[i] << " -> ";
-                    }
-                    std::cout<<"\b\b\b\b   \n";
                     break;
                 }
                 case 1:
@@ -361,6 +356,11 @@ void printExpression(Expression exp, int indent) {
                     break;
                 }
             }
+            std::cout << std::string(indent+2, ' ') << "Scope: ";
+            for (int i = 0; i < x.scope.size(); i++) {
+                std::cout << x.scope[i] << " -> ";
+            }
+            std::cout<<"\b\b\b\b   \n";
             break;
         }
         case 2:
@@ -371,9 +371,8 @@ void printExpression(Expression exp, int indent) {
             } else {
                 std::cout << std::string(indent, ' ') << "Assignment: " << std::endl;
             }
-            printExpression(Expression(&x.variable), indent+2);
+            printExpression(Expression(new VariableReference(x.variable)), indent+2);
             printExpression(x.value, indent+2);
-            
             break;
         }
         case 3:
@@ -419,7 +418,7 @@ void printNode(Statement statement, int indent) {
         }
         case 1:
         {
-            Block* x = statement.block;
+            std::shared_ptr<Block> x = statement.block;
             std::cout << std::string(indent, ' ') << "Block: " << std::endl;
             for (int i = 0; i < x->statements.size(); i++) {
                 printNode(x->statements[i], indent+2);
@@ -428,7 +427,7 @@ void printNode(Statement statement, int indent) {
         }
         case 2:
         {
-            FunctionDefinition* x = statement.functionDefinition;
+            std::shared_ptr<FunctionDefinition> x = statement.functionDefinition;
             std::cout << std::string(indent, ' ') << "Function definition: " << x->identifier << std::endl;
             std::cout << std::string(indent+2, ' ') << "Parameters: ";
             for (int i = 0; i < x->parameters.size(); i++) {
@@ -441,7 +440,7 @@ void printNode(Statement statement, int indent) {
         }
         case 3:
         {
-            IfStatement* x = statement.ifStatement;
+            std::shared_ptr<IfStatement> x = statement.ifStatement;
             std::cout << std::string(indent, ' ') << "If statement: " << std::endl;
             std::cout << std::string(indent+2, ' ') << "Condition: " << std::endl;
             printExpression(x->condition, indent+4);
@@ -455,7 +454,7 @@ void printNode(Statement statement, int indent) {
         }
         case 4:
         {
-            SwitchStatement* x = statement.switchStatement;
+            std::shared_ptr<SwitchStatement> x = statement.switchStatement;
             std::cout << std::string(indent, ' ') << "Switch statement: " << std::endl;
             std::cout << std::string(indent+2, ' ') << "Condition: " << std::endl;
             printExpression(x->condition, indent+4);
@@ -471,7 +470,7 @@ void printNode(Statement statement, int indent) {
         }
         case 5:
         {
-            WhileLoop* x = statement.whileLoop;
+            std::shared_ptr<WhileLoop> x = statement.whileLoop;
             std::cout << std::string(indent, ' ') << "While loop: " << std::endl;
             std::cout << std::string(indent+2, ' ') << "Condition: " << std::endl;
             printExpression(x->condition, indent+4);
@@ -481,7 +480,7 @@ void printNode(Statement statement, int indent) {
         }
         case 6:
         {
-            ForLoop* x = statement.forLoop;
+            std::shared_ptr<ForLoop> x = statement.forLoop;
             std::cout << std::string(indent, ' ') << "For loop: " << std::endl;
             std::cout << std::string(indent+2, ' ') << "Condition: " << std::endl;
             printExpression(x->condition, indent+4);
@@ -495,14 +494,14 @@ void printNode(Statement statement, int indent) {
         }
         case 7:
         {
-            ReturnCall* x = statement.returnCall;
+            std::shared_ptr<ReturnCall> x = statement.returnCall;
             std::cout << std::string(indent, ' ') << "Return call: " << std::endl;
             printExpression(x->toReturn, indent+2);
             break;
         }
         case 8:
         {
-            BreakCall* x = statement.breakCall;
+            std::shared_ptr<BreakCall> x = statement.breakCall;
             if (x->abrupt) {
                 std::cout << std::string(indent, ' ') << "Break call";
             } else {
@@ -601,15 +600,73 @@ private:
         return Statement(); // to make gcc SHUT THE FUCK UP ABOUT CONTROL REACHING END OF NON-VOID FUNCTION. ITS NOT GONNA HAPPEN.
     }
 
-    const std::string augment[15] = {"+=","-=",">>=","<<=","/=","*=","%=","^=","&=","|=","!=","~=", "++", "--", "!!"};
+    VariableReference parseIdentifier() {
+        if (tokens[current].value == "*") {
+            // pointers, all of pointers.
+            current++; // Skip "*"
+            if (tokens[current].type == Identifier) {
+                checkVariable(false);
+                VariableReference var = VariableReference(tokens[current].value, VariableReference::Pointer, vartable[tokens[current].value]);
+                current++;
+                return var;
+            } else {
+                // "member"
+                return VariableReference(parseExpression(true).expression, scopeTree);
+            }
+        } else if (tokens[current].value == "&") {
+            // reference
+            current++; // Skip "&"
+            checkVariable(false);
+            VariableReference var = VariableReference(tokens[current].value, VariableReference::Reference, vartable[tokens[current].value]);
+            current++;
+            return var;
+        } else if (tokens[current+1].value == "[") {
+            // member: array
+            std::string id = sanitize(Identifier);
+            checkVariable(false);
+            current++; // Skip self
+            current++; // Skip "["
+            Expression exp = parseExpression().expression;
+            VariableReference* var = new VariableReference(id, VariableReference::Reference, vartable[id]);
+            current++; // Skip "]"
+            return VariableReference(Expression(new Operation(Expression(var), exp, "+")), scopeTree);
+        } else {
+            // value
+            std::string id = sanitize(Identifier);
+            checkVariable(false);
+            VariableReference var = VariableReference(id, VariableReference::Value, vartable[id]);
+            current++; // Skip self
+            return var;
+        }
+        return VariableReference(); // to make gcc shut the fuck up here too
+    }
 
-    VariableReference parseIdentifier();
+    LiteralExpression parseArray() {
+        LiteralExpression lit;
+        lit.type = LiteralExpression::Array;
+        if (tokens[current].value == "[") {
+            current++; // Skip "["
+            while (tokens[current].value != "]") {
+                lit.array.push_back(parseExpression().expression);
+                if (tokens[current].value == ",") current++; // Skip the commas
+            }
+            current++; // Skip "]"
+        } else if (tokens[current].value == "\"") {
+            current++; // Skip "\""
+            for (int i = 0; i < tokens[current].value.length(); i++) {
+                lit.array.push_back(new LiteralExpression(tokens[current].value[i]));
+            }
+            current++; // Skip the string itself
+            current++; // Skip "\""
+        } else {
+            error(UnexpectedToken, tokens[current]);
+        }
+        return lit;
+    }
 
-    LiteralExpression parseArray();
-
-    Statement parseExpression() {
+    Statement parseExpression(bool single = false) {
         std::vector<Expression> expressions;
-        std::string op = "";
+        std::vector<std::string> op;
         
         while (tokens[current].value != ";" && tokens[current].value != ")" && tokens[current].value != "," && tokens[current].value != "]" && current < tokens.size()-1) {
             if (tokens[current].type == Identifier && tokens[current+1].value == "(") {
@@ -625,55 +682,12 @@ private:
                 }
                 current++; // Skip ")"
                 expressions.push_back(ret);
-            } else if (tokens[current+1].value == "=") {
-                // Assignment
-                VariableReference var = parseIdentifier();
-                current++; // Skip "="
-                Expression value = parseExpression().expression;
-                
-                Assignment* ret = new Assignment();
-                ret->variable = var;
-                ret->value = value;
-                expressions.push_back(ret);
-                break;
-            } else if (std::find(std::begin(augment), std::end(augment), tokens[current+1].value) != std::end(augment)) {
-                // Augmented assignment
-                VariableReference* var = new VariableReference(parseIdentifier());
-                std::string operation(1, tokens[current].value[0]);
-                Operation* value = new Operation();
-                value->a = Expression(var);
-
-                if (tokens[current].value == "++" || tokens[current].value == "--" || tokens[current].value == "!!") {
-                    current++; // Skip the operation
-                    value->b = Expression(new LiteralExpression(1));
-                } else {
-                    if (operation == ">") operation = ">>";
-                    if (operation == "<") operation = "<<";
-                    current++; // Skip the operation
-                    Expression exp = parseExpression().expression;
-                    value->b = exp;
-                }
-                Assignment* ret = new Assignment();
-                ret->augmentedAssignment = true;
-                ret->variable = *var;
-                value->operation = operation;
-                ret->value = Expression(value);
-                expressions.push_back(ret);
-                break;
             } else if (tokens[current].value == "auto" || tokens[current].value == "static") {
                 // Assignment coming from declaration
                 current++; // Skip storage duration
-                VariableReference var = parseIdentifier();
-                while (tokens[current].value != "=") current++;
-                current++; // Skip "="
-                Expression value = parseExpression().expression;
-
-                Assignment* ret = new Assignment();
-                ret->variable = var;
-                ret->value = value;
-                expressions.push_back(ret);
-                break;
-            } else if (tokens[current].type == Identifier) {
+                VariableReference* var = new VariableReference(parseIdentifier());
+                expressions.push_back(Expression(var));
+            } else if (tokens[current].type == Identifier || (tokens[current].value == "*" && (current > 0 || tokens[current-1].type != Identifier)) || (tokens[current].value == "&" && tokens[current+1].type == Identifier)) {
                 // Variable
                 VariableReference* var = new VariableReference(parseIdentifier());
                 expressions.push_back(Expression(var));
@@ -692,34 +706,75 @@ private:
                     *lit = LiteralExpression(tokens[current].value[0]);
                     current++; // Skip "'"
                 }
-
                 current++; // Skip self
                 expressions.push_back(Expression(lit));
             } else if (tokens[current].value == "(") {
                 current++; // Skip "("
                 expressions.push_back(parseExpression().expression);
                 current++; // Skip ")"
-            } else if (tokens[current].type == Punctuation) {
-                op = tokens[current++].value;
+            }
+            if (tokens[current].type == Punctuation && tokens[current].value != ";" && tokens[current].value != ")" && tokens[current].value != "," && tokens[current].value != "]") {
+                if (single) {
+                    return expressions[0];
+                }
+                if (expressions.size() != op.size()+1) {
+                    error(UnexpectedToken, tokens[current]);
+                }
+                op.push_back(tokens[current++].value);
+            } else {
+                op.push_back("");
             }
         }
-    
-        if (expressions.size() == 1) {
-            return Statement(expressions[0]);
-        } else if (expressions.size() == 2) {
-            if (op == "") {
-                error(UnexpectedToken, tokens[current-1]);
+
+        return Statement(parseOperation(expressions, op));
+    }
+
+    const std::string augment[15] = {"+=","-=",">>=","<<=","/=","*=","%=","^=","&=","|=","!=","~=", "++", "--", "!!"};
+
+    Expression parseOperation(std::vector<Expression> expressions, std::vector<std::string> op) {
+        if (op[0] == "") {
+            return expressions[0];
+        } else if (op[0] == "=") {
+            // Assignment
+            Assignment* ret = new Assignment();
+            ret->variable = *expressions[0].variableReference;
+            expressions.erase(expressions.begin());
+            op.erase(op.begin());
+            ret->value = parseOperation(expressions, op);
+            return Expression(ret);
+        } else if (std::find(std::begin(augment), std::end(augment), op[0]) != std::end(augment)) {
+            // Augmented assignment
+            Assignment* ret = new Assignment();
+            ret->augmentedAssignment = true;
+            ret->variable = *expressions[0].variableReference;
+
+            Operation* value = new Operation();
+            std::string operation(1, op[0][0]);
+            value->a = expressions[0];
+            std::cout<<op[0]<<std::endl;
+            if (op[0] == "++" || op[0] == "--" || op[0] == "!!") {
+                value->b = Expression(new LiteralExpression(1));
+            } else {
+                if (operation == ">") operation = ">>";
+                if (operation == "<") operation = "<<";
+                expressions.erase(expressions.begin());
+                op.erase(op.begin());
+                value->b = parseOperation(expressions, op);
             }
-            Operation* ret = new Operation(expressions[0], expressions[1], op);
-            return Statement(Expression(ret));
+            value->operation = operation;
+            
+            ret->value = Expression(value);
+            return (Expression(ret));
         } else {
-            if (op == ":") {
-                TernaryOperation* ret = new TernaryOperation(expressions[1], expressions[2], expressions[0]);
-                return Statement(Expression(ret));
-            }
-            error(UnexpectedToken, tokens[current-1]); // TODO: fix i think
-            return Statement();
+            Operation* ret = new Operation();
+            ret->operation = op[0];
+            ret->a = expressions[0];
+            expressions.erase(expressions.begin());
+            op.erase(op.begin());
+            ret->b = parseOperation(expressions, op);
+            return Expression(ret);
         }
+        return Expression();
     }
 
     Statement parseBlock() {
@@ -1002,59 +1057,6 @@ private:
     }
 };
 
-VariableReference Parser::parseIdentifier() {
-    if (tokens[current].value == "*") {
-        // pointers, all of pointers.
-        current++; // Skip "*"
-        if (tokens[current].type == Identifier) {
-            checkVariable(false);
-            VariableReference var = VariableReference(tokens[current].value, VariableReference::Pointer, scopeTree);
-            current++;
-            return var;
-        } else {
-            // "member"
-            return VariableReference("", parseExpression().expression, {0});
-        }
-    } else if (tokens[current].value == "&") {
-        // reference
-        current++; // Skip "&"
-        checkVariable(false);
-        VariableReference var = VariableReference(tokens[current].value, VariableReference::Reference, scopeTree);
-        current++;
-        return var;
-    } else {
-        // value
-        std::string id = sanitize(Identifier);
-        checkVariable(false);
-        VariableReference var = VariableReference(tokens[current].value, VariableReference::Value, scopeTree);
-        current++;
-        return var;
-    }
-    return VariableReference(); // to make gcc shut the fuck up here too
-}
-
-LiteralExpression Parser::parseArray() {
-    LiteralExpression lit;
-    lit.type = LiteralExpression::Array;
-    if (tokens[current].value == "[") {
-        current++; // Skip "["
-        while (tokens[current].value != "]") {
-            lit.array.push_back(parseExpression().expression);
-            if (tokens[current].value == ",") current++; // Skip the commas
-        }
-        current++; // Skip "]"
-    } else if (tokens[current].value == "\"") {
-        current++; // Skip "\""
-        for (int i = 0; i < tokens[current].value.length(); i++) {
-            lit.array.push_back(new LiteralExpression(tokens[current].value[i]));
-        }
-        current++; // Skip the string itself
-        current++; // Skip "\""
-    } else {
-        error(UnexpectedToken, tokens[current]);
-    }
-    return lit;
-}
 
 class Lexer {
 public:
@@ -1280,6 +1282,7 @@ public:
                     column++; currentPos++;
                 } else if (source[currentPos+1] == '!') {
                     tokens.push_back({Punctuation, "!!", line, column});
+                    column++; currentPos++;
                 } else {
                     tokens.push_back({Punctuation, "!", line, column});
                 }
