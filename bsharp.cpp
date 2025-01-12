@@ -35,7 +35,7 @@ struct Token {
     statements such as if, while, for, loop can all return something and be used in expressions.
 */
 
-struct LiteralExpression; struct VariableReference; struct Assignment; struct Operation; struct TernaryOperation; struct FunctionCall;
+struct VariableData; struct LiteralExpression; struct VariableReference; struct Assignment; struct Operation; struct TernaryOperation; struct FunctionCall;
 
 struct Expression {
     enum Type {
@@ -63,12 +63,29 @@ struct Expression {
     Expression(FunctionCall* functionCall) : type(FunctionCallType), functionCall(functionCall) {};
 };
 
+struct VariableData {
+    enum DataType {
+        Short = 1,
+        Int = 2,
+        Long = 4,
+        Template
+    } dataType;
+
+    bool array = false;
+
+    std::map<std::string, VariableData>* templ;
+    size_t size = 0;
+    std::string identifier;
+    std::vector<int> scope;
+};
+
 struct LiteralExpression {
     enum Type {
         Integer,
         Floating,
         Char,
-        Array
+        Array,
+        TemplateInit
     } type;
 
     int integer = 0; // also handles char
@@ -89,12 +106,12 @@ struct VariableReference {
         Member // what i called NoVar in the other compiler. it's whenever the position is an expression (pointed by to AX/R1, i'd assume)
     } type;
     
-    std::string identifier;
-    std::vector<int> scope;
+    VariableData var;
+    
     Expression position; // it's usually a literal for Values and Pointers! it's another VariableReference of type Value for References, and something else for Members.
     VariableReference() {};
-    VariableReference(Expression position, std::vector<int> scope) : type(Member), identifier(identifier), position(position), scope(scope) {};
-    VariableReference(std::string identifier, Type type, std::vector<int> scope) : type(type), identifier(identifier), scope(scope) {};
+    VariableReference(Expression position) : type(Member), position(position) {};
+    VariableReference(Type type, VariableData var) : type(type), var(var) {};
 };
 
 struct Assignment { // remember! assignments ALWAYS return the variable after assignment, even x++ (it is no different from ++x)
@@ -170,7 +187,7 @@ struct Block {
 
 struct FunctionDefinition {
     std::string identifier;
-    std::vector<std::string> parameters; // each parameter includes a declaration (local) during parsing.
+    std::vector<VariableData> parameters; // each parameter includes a declaration (local) during parsing.
     Statement body;
 };
 
@@ -223,25 +240,29 @@ enum ErrorType {
     UndefinedVariable,
     UndefinedFunction,
     VariableAlreadyDefined,
-    FunctionAlreadyDefined // overloading is not allowed
+    FunctionAlreadyDefined, // overloading is not allowed
+    TypeMismatch,
+    OperationNotAllowed
 };
 
 
-std::map<std::string, std::vector<int>> vartable; // only global variables. for extrn, the int is -1, and is solved at linking time.
+std::map<std::string, VariableData> vartable; // only global variables. for extrn, the int is -1, and is solved at linking time.
 std::vector<std::string> funtable;
+std::map<std::string, std::map<std::string, VariableData>> templatetable;
 std::string sourceCode;
 std::string filename;
 
 void error(ErrorType err, Token token) {
-    // 3 is italic, 1 is bold, 4 is underline
-    // 30 is black, 97 is white, 91 is red, 94 is blue
     std::cerr<<"\033[3;94m"<<filename<<"\033[0;97m at \033[1;93m"<<token.line+1<<":"<<token.column+1<<"\033[1;91m Fatal error: \033[0;97m";
+    bool highlight = true;
+
     switch (err) {
         case PunctuationNotMatched:
             std::cerr << token.value << ": unmatched punctuation" << std::endl;
             break;
         case UnexpectedEOF:
             std::cerr << "unexpected EoF" << std::endl;
+            highlight = false;
             break;
         case InvalidPreprocessingDirective:
             std::cerr << token.value << ": invalid preprocessing directive" << std::endl;
@@ -251,6 +272,7 @@ void error(ErrorType err, Token token) {
                 std::cerr << token.value << ": macro names must be identifiers" << std::endl;
             } else {
                 std::cerr << "macro names must be identifiers" << std::endl;
+                highlight = false;
             }
             break;
         case FileNotFound:
@@ -277,6 +299,14 @@ void error(ErrorType err, Token token) {
         case FunctionAlreadyDefined:
             std::cerr << "function is already defined: " << token.value << std::endl;
             break;
+         case TypeMismatch:
+            std::cerr << "type mismatch" << std::endl;
+            highlight = false;
+            break;
+        case OperationNotAllowed:
+            std::cerr << "operation not allowed on this data type" << token.value << std::endl;
+            highlight = false;
+            break;
     }
     std::istringstream stream(sourceCode);
     std::string s;
@@ -285,7 +315,7 @@ void error(ErrorType err, Token token) {
     }
     std::cerr<<"\033[93m"<<std::setw(5)<<token.line+1<<"\033[97m | ";
     for (int i = 0; i < s.length(); i++) {
-        if (i == token.column) {
+        if (i == token.column && highlight) {
             std::cerr<<"\033[1;4m";
         }
         if (i == token.column + token.value.length()) {
@@ -327,6 +357,14 @@ void printExpression(Expression exp, int indent) {
                     }
                     break;
                 }
+                case 4:
+                {
+                    std::cout << std::string(indent, ' ') << "Template initialization: " << std::endl;
+                    for (int i = 0; i < x.array.size(); i++) {
+                        printExpression(x.array[i], indent+2);
+                    }
+                    break;
+                }
             }
             break;
         }
@@ -336,17 +374,17 @@ void printExpression(Expression exp, int indent) {
             switch (x.type) {
                 case 0:
                 {
-                    std::cout << std::string(indent, ' ') << "Variable: " << x.identifier << std::endl;
+                    std::cout << std::string(indent, ' ') << "Variable: " << x.var.identifier << std::endl;
                     break;
                 }
                 case 1:
                 {
-                    std::cout << std::string(indent, ' ') << "Reference: " << x.identifier << std::endl;
+                    std::cout << std::string(indent, ' ') << "Reference: " << x.var.identifier << std::endl;
                     break;
                 }
                 case 2:
                 {
-                    std::cout << std::string(indent, ' ') << "Pointer: " << x.identifier << std::endl;
+                    std::cout << std::string(indent, ' ') << "Pointer: " << x.var.identifier << std::endl;
                     break;
                 }
                 case 3:
@@ -356,11 +394,14 @@ void printExpression(Expression exp, int indent) {
                     break;
                 }
             }
+            if (x.type == 3) break;
             std::cout << std::string(indent+2, ' ') << "Scope: ";
-            for (int i = 0; i < x.scope.size(); i++) {
-                std::cout << x.scope[i] << " -> ";
+            for (int i = 0; i < x.var.scope.size(); i++) {
+                std::cout << x.var.scope[i] << " -> ";
             }
             std::cout<<"\b\b\b\b   \n";
+            std::cout << std::string(indent+2, ' ') << "Data Type: " << x.var.dataType << std::endl;
+            std::cout << std::string(indent+2, ' ') << "Size: " << x.var.size << std::endl;
             break;
         }
         case 2:
@@ -431,7 +472,7 @@ void printNode(Statement statement, int indent) {
             std::cout << std::string(indent, ' ') << "Function definition: " << x->identifier << std::endl;
             std::cout << std::string(indent+2, ' ') << "Parameters: ";
             for (int i = 0; i < x->parameters.size(); i++) {
-                std::cout << x->parameters[i] << ", ";
+                std::cout << x->parameters[i].identifier << ", ";
             }
             std::cout << "\b\b \n";
             std::cout << std::string(indent+2, ' ') << "Body: " << std::endl;
@@ -560,11 +601,65 @@ private:
         }
         return true;
     }
+    
+    void matchType(Expression expr, VariableData var) {
+        if (expr.type == Expression::VariableReferenceType) {
+            if (var.dataType != expr.variableReference->var.dataType) {
+                error(TypeMismatch, tokens[current-1]);
+            }
+            if (var.array ^ expr.variableReference->var.array) {
+                error(TypeMismatch, tokens[current-1]);
+            }
+            if (var.dataType == VariableData::Template) {
+                if (var.templ != expr.variableReference->var.templ) {
+                    error(TypeMismatch, tokens[current-1]);
+                } else {
+                    return;
+                }
+            }
+            if (var.size == expr.variableReference->var.size) {
+                return;
+            } else {
+                error(TypeMismatch, tokens[current-1]);
+            }
+        } else if (expr.type != Expression::LiteralExpressionType) {
+            if (var.array || var.dataType == VariableData::Template) {
+                error(TypeMismatch, tokens[current-1]);
+            } else {
+                return;
+            }
+        }
+        LiteralExpression lit = *expr.literalExpression;
+        if (var.array && lit.type == LiteralExpression::Array) {
+            if ((var.size / static_cast<int>(var.dataType)) == lit.array.size()) {
+                return;
+            } else {
+                error(TypeMismatch, tokens[current-1]);
+            }
+        } else if (var.dataType == VariableData::Template && lit.type == LiteralExpression::TemplateInit) {
+            if (var.templ->size() != lit.array.size()) {
+                error(TypeMismatch, tokens[current-1]);
+            }
+            int i = 0;
+            for (const auto& pair : *var.templ) {
+                matchType(lit.array[i], pair.second);
+                i++;
+            }
+        } else {
+            if (var.array || var.dataType == VariableData::Template) {
+                error(TypeMismatch, tokens[current-1]);
+            } if (lit.type == LiteralExpression::Array || lit.type == LiteralExpression::TemplateInit) {
+                error(TypeMismatch, tokens[current-1]);
+            } else {
+                return;
+            }
+        }
+    }
 
     void checkVariable(bool definition = true) {
         if (definition) {
             if (vartable.find(tokens[current].value) != vartable.end()) {
-                std::vector s = vartable[tokens[current].value];
+                std::vector<int> s = vartable[tokens[current].value].scope;
                 if (matchScope(s)) {
                     error(VariableAlreadyDefined, tokens[current]);
                 }
@@ -573,7 +668,7 @@ private:
             if (vartable.find(tokens[current].value) == vartable.end()) {
                 error(UndefinedVariable, tokens[current]);
             }
-            std::vector s = vartable[tokens[current].value];
+            std::vector<int> s = vartable[tokens[current].value].scope;
             if (!matchScope(s)) {
                 error(UndefinedVariable, tokens[current]);
             }
@@ -592,49 +687,57 @@ private:
         else if (tokens[current].value == "continue")   return parseContinueCall();
         else if (tokens[current].value == "auto" ||
                  tokens[current].value == "static" ||
-                 tokens[current].value == "extrn")      return parseDeclaration();
+                 tokens[current].value == "extrn" ||
+                 tokens[current].value == "int" ||
+                 tokens[current].value == "short" ||
+                 tokens[current].value == "long" ||
+                 templatetable.find(tokens[current].value) != templatetable.end()
+                                                 )      return parseDeclaration();
         else if (tokens[current].value == "fn")         return parseFunctionDefinition();
-        else if (tokens[current].value == ";")          {current++; return Statement(new Block());}
+        else if (tokens[current].value == "template")         return parseTemplateDefinition();
+        else if (tokens[current].value == ";")          {current++; return Statement();}
         else if (tokens[current].type == EoF)           error(UnexpectedEOF, tokens[current]);
         else                                            {Statement ret = parseExpression(); if (tokens[current].value==";") current++; return ret;}
         return Statement(); // to make gcc SHUT THE FUCK UP ABOUT CONTROL REACHING END OF NON-VOID FUNCTION. ITS NOT GONNA HAPPEN.
     }
 
-    VariableReference parseIdentifier() {
-        if (tokens[current].value == "*") {
+    VariableReference parseIdentifier(bool declaration) {
+        if (tokens[current].value == "*" && !declaration) {
             // pointers, all of pointers.
             current++; // Skip "*"
             if (tokens[current].type == Identifier) {
                 checkVariable(false);
-                VariableReference var = VariableReference(tokens[current].value, VariableReference::Pointer, vartable[tokens[current].value]);
+                VariableReference var = VariableReference(VariableReference::Pointer, vartable[tokens[current].value]);
                 current++;
                 return var;
             } else {
                 // "member"
-                return VariableReference(parseExpression(true).expression, scopeTree);
+                return VariableReference(parseExpression(true).expression);
             }
-        } else if (tokens[current].value == "&") {
+        } else if (tokens[current].value == "&" && !declaration) {
             // reference
             current++; // Skip "&"
             checkVariable(false);
-            VariableReference var = VariableReference(tokens[current].value, VariableReference::Reference, vartable[tokens[current].value]);
+            VariableReference var = VariableReference(VariableReference::Reference, vartable[tokens[current].value]);
             current++;
             return var;
-        } else if (tokens[current+1].value == "[") {
+        } else if (tokens[current+1].value == "[" && !declaration) {
             // member: array
             std::string id = sanitize(Identifier);
             checkVariable(false);
             current++; // Skip self
             current++; // Skip "["
             Expression exp = parseExpression().expression;
-            VariableReference* var = new VariableReference(id, VariableReference::Reference, vartable[id]);
+            VariableReference* var = new VariableReference(VariableReference::Reference, vartable[id]);
             current++; // Skip "]"
-            return VariableReference(Expression(new Operation(Expression(var), exp, "+")), scopeTree);
+            return VariableReference(Expression(new Operation(Expression(var), exp, "+")));
+        } else if (tokens[current+1].value == "." && !declaration) {
+            // handle
         } else {
             // value
             std::string id = sanitize(Identifier);
             checkVariable(false);
-            VariableReference var = VariableReference(id, VariableReference::Value, vartable[id]);
+            VariableReference var = VariableReference(VariableReference::Value, vartable[id]);
             current++; // Skip self
             return var;
         }
@@ -664,11 +767,23 @@ private:
         return lit;
     }
 
+    LiteralExpression parseTemplateLiteral() {
+        LiteralExpression lit;
+        lit.type = LiteralExpression::TemplateInit;
+        current++; // Skip "<"
+        while (tokens[current].value != ">") {
+            lit.array.push_back(parseExpression().expression);
+            if (tokens[current].value == ",") current++; // Skip the commas
+        }
+        current++; // Skip ">"
+        return lit;
+    }
+
     Statement parseExpression(bool single = false) {
         std::vector<Expression> expressions;
         std::vector<std::string> op;
         
-        while (tokens[current].value != ";" && tokens[current].value != ")" && tokens[current].value != "," && tokens[current].value != "]" && current < tokens.size()-1) {
+        while (tokens[current].value != ";" && tokens[current].value != ")" && tokens[current].value != "," && tokens[current].value != "]" && !(tokens[current].value == ">" && (tokens[current+1].value == ";" || tokens[current+1].value == "," || tokens[current+1].value == ">" || tokens[current+1].value == "]")) && current < tokens.size()-1) {
             if (tokens[current].type == Identifier && tokens[current+1].value == "(") {
                 FunctionCall* ret = new FunctionCall();
                 ret->identifier = tokens[current++].value;
@@ -685,16 +800,22 @@ private:
             } else if (tokens[current].value == "auto" || tokens[current].value == "static") {
                 // Assignment coming from declaration
                 current++; // Skip storage duration
-                VariableReference* var = new VariableReference(parseIdentifier());
+                if (tokens[current].value == "int" || tokens[current].value == "short" || tokens[current].value == "long" || templatetable.find(tokens[current].value) != templatetable.end()) current++; // Skip data type
+                VariableReference* var = new VariableReference(parseIdentifier(true));
+                while (tokens[current].value != "=") current++;
                 expressions.push_back(Expression(var));
             } else if (tokens[current].type == Identifier || (tokens[current].value == "*" && (current > 0 || tokens[current-1].type != Identifier)) || (tokens[current].value == "&" && tokens[current+1].type == Identifier)) {
                 // Variable
-                VariableReference* var = new VariableReference(parseIdentifier());
+                VariableReference* var = new VariableReference(parseIdentifier(false));
                 expressions.push_back(Expression(var));
             } else if (tokens[current].value == "[" || tokens[current].value == "\"") {
                 // Array
                 LiteralExpression* arr = new LiteralExpression(parseArray());
                 expressions.push_back(Expression(arr));
+            } else if (tokens[current].value == "<" && current != 0 && (tokens[current-1].value == "," || tokens[current-1].value == "<" || tokens[current-1].value == "=" || tokens[current-1].value == ";" || tokens[current-1].value == "[")) {
+                // Template init
+                LiteralExpression* templ = new LiteralExpression(parseTemplateLiteral());
+                expressions.push_back(Expression(templ));
             } else if (tokens[current].type == Literal || tokens[current].value == "'") {
                 // Literal
                 LiteralExpression* lit = new LiteralExpression();
@@ -713,7 +834,7 @@ private:
                 expressions.push_back(parseExpression().expression);
                 current++; // Skip ")"
             }
-            if (tokens[current].type == Punctuation && tokens[current].value != ";" && tokens[current].value != ")" && tokens[current].value != "," && tokens[current].value != "]") {
+            if (tokens[current].type == Punctuation && tokens[current].value != ";" && tokens[current].value != ")" && tokens[current].value != "," && tokens[current].value != "]" && !(tokens[current].value == ">" && (tokens[current+1].value == ";" || tokens[current+1].value == "," || tokens[current+1].value == ">" || tokens[current+1].value == "]"))) {
                 if (single) {
                     return expressions[0];
                 }
@@ -741,17 +862,19 @@ private:
             expressions.erase(expressions.begin());
             op.erase(op.begin());
             ret->value = parseOperation(expressions, op);
+            if (ret->variable.type == VariableReference::Value) {
+                matchType(ret->value, ret->variable.var);
+            }
             return Expression(ret);
         } else if (std::find(std::begin(augment), std::end(augment), op[0]) != std::end(augment)) {
             // Augmented assignment
             Assignment* ret = new Assignment();
             ret->augmentedAssignment = true;
             ret->variable = *expressions[0].variableReference;
-
+            if (ret->variable.var.array || ret->variable.var.dataType == VariableData::Template) error(OperationNotAllowed, tokens[current-1]);
             Operation* value = new Operation();
             std::string operation(1, op[0][0]);
             value->a = expressions[0];
-            std::cout<<op[0]<<std::endl;
             if (op[0] == "++" || op[0] == "--" || op[0] == "!!") {
                 value->b = Expression(new LiteralExpression(1));
             } else {
@@ -760,6 +883,7 @@ private:
                 expressions.erase(expressions.begin());
                 op.erase(op.begin());
                 value->b = parseOperation(expressions, op);
+                if (value->b.type == Expression::LiteralExpressionType && (value->b.literalExpression->type == LiteralExpression::Array) || (value->b.literalExpression->type == LiteralExpression::TemplateInit)) error(OperationNotAllowed, tokens[current]);
             }
             value->operation = operation;
             
@@ -772,6 +896,8 @@ private:
             expressions.erase(expressions.begin());
             op.erase(op.begin());
             ret->b = parseOperation(expressions, op);
+            if (ret->b.type == Expression::LiteralExpressionType && (ret->b.literalExpression->type == LiteralExpression::Array) || (ret->b.literalExpression->type == LiteralExpression::TemplateInit)) error(OperationNotAllowed, tokens[current]);
+            if (ret->a.type == Expression::LiteralExpressionType && (ret->a.literalExpression->type == LiteralExpression::Array) || (ret->a.literalExpression->type == LiteralExpression::TemplateInit)) error(OperationNotAllowed, tokens[current]);
             return Expression(ret);
         }
         return Expression();
@@ -800,11 +926,8 @@ private:
         funtable.push_back(ret->identifier);
         skip("("); // Skip "("
         while (tokens[current].value != ")") {
-            vartable[tokens[current].value] = {0, scope+1};
-            ret->parameters.push_back(tokens[current++].value);
-            if (tokens[current].value == ",") {
-                current++; // Skip ","
-            }
+            ret->parameters.push_back(parseVariable(false, false));
+            if (tokens[current].value == ",") current++; // Skip the commas
         }
         current++; // Skip ")"
         ret->body = parseStatement();
@@ -916,143 +1039,109 @@ private:
         return Statement(ret);
     }
 
+    VariableData parseVariable(bool autoSize, bool global, bool abstract = false) {
+        if (!abstract) {
+            checkVariable();
+        }
+        VariableData var;
+        if (global) var.scope = {0};
+        else var.scope = scopeTree;
+        if (tokens[current].value == "int") {
+            var.dataType = VariableData::Int;
+            current++;
+            var.size = 2;
+        } else if (tokens[current].value == "short") {
+            var.dataType = VariableData::Short;
+            current++;
+            var.size = 1;
+        } else if (tokens[current].value == "long") {
+            var.dataType = VariableData::Long;
+            current++;
+            var.size = 4;
+        } else if (templatetable.find(tokens[current].value) != templatetable.end()) {
+            var.size = 0;
+            var.dataType = VariableData::Template;
+            var.templ = &templatetable[tokens[current].value];
+            for (const auto& pair : templatetable[tokens[current].value]) {
+                var.size += pair.second.size;
+            }
+            current++;
+        } else {
+            var.dataType = VariableData::Int;
+            var.size = 2;
+        }
+        
+        var.identifier = sanitize(Identifier);
+        current++; // Skip identifier
+        int arraySize = 1;
+        if (tokens[current].value == "[") {
+            var.array = true;
+            current++; // Skip "["
+            if (tokens[current].value == "]" && autoSize) {
+                current++; // Skip "]"
+                int startpos = current;
+                if (tokens[current].value != "=") error(UnexpectedToken, tokens[current]);
+                current++; // Skip "="
+                LiteralExpression arr = parseArray();
+                arraySize = arr.array.size();
+                current = startpos;
+            } else {
+                arraySize = stoi(sanitize(Literal));
+                current++; // Skip literal
+                current++; // Skip "]"
+            }
+        }
+        var.size = var.size * arraySize;
+        if (!abstract) {
+            vartable[var.identifier] = var;
+        }
+        return var;
+    }
+
     Statement parseDeclaration() {
         std::string duration = tokens[current].value;
         int startpos = current;
         current++; // Skip "auto"/"static"/"extrn"
         if (duration == "extrn") {
-            if (tokens[current].value == "fn") {
-                current++; // Skip "fn"
-                funtable.push_back(sanitize(Identifier));
-                current++; // Skip identifier
-                skip(";");
-            } else {
-                checkVariable();
-                if (tokens[current+1].value == "[") {
-                    std::string id = sanitize(Identifier);
-                    vartable[id] = {0};
-                    current++; // Skip identifier 
-                    current++; // Skip "["
-                    for (int i = 1; i < stoi(sanitize(Literal)); i++) {
-                        vartable[id + std::to_string(i)] = {0};
-                    }
-                    current++; // Skip the number inside the brackets
-                    current++; // Skip "]"
-                    skip(";");
-                } else {
-                    vartable[sanitize(Identifier)] = {0};
-                    current++; // Skip identifier
-                    skip(";");
-                }
-            }
+            parseVariable(false, true);
+            skip(";");
         } else if (duration == "static") {
-            checkVariable();
-            if (tokens[current+1].value == "[") {
-                std::string id = sanitize(Identifier);
-                vartable[id] = {0};
-                current++; // Skip identifier 
-                current++; // Skip "["'
-                
-                if (tokens[current].value == "]") {
-                    current++; // Skip "]"
-                    if (tokens[current].value != "=") error(UnexpectedToken, tokens[current]);
-                    current++; // Skip "="
-                    LiteralExpression arr = parseArray();
-                    for (int i = 1; i < arr.array.size(); i++) {
-                        vartable[id + std::to_string(i)] = {0};
-                    }
-                    current = startpos;
-                    print
-                    Statement ret = parseExpression();
-                    current++; // Skip ";"
-                    return ret;
-                } else {
-                    for (int i = 1; i < stoi(sanitize(Literal)); i++) {
-                        vartable[id + std::to_string(i)] = {0};
-                    }
-                    current++; // Skip the number inside the brackets
-                    current++; // Skip "]"
-                    if (tokens[current].value != ";") {
-                        current = startpos;
-                        Statement ret = parseExpression();
-                        current++; // Skip ";"
-                        return ret;
-                    }
-                }
+            parseVariable(true, true);
+            if (tokens[current].value != ";") {
+                current = startpos;
+                Statement ret = parseExpression();
                 current++; // Skip ";"
-            } else {
-                vartable[sanitize(Identifier)] = {0};
-                current++; // Skip identifier
-                if (tokens[current].value != ";") {
-                        current = startpos;
-                        Statement ret = parseExpression();
-                        current++; // Skip ";"
-                        return ret;
-                    }
-                current++; // Skip ";"
+                return ret;
             }
+            current++; // Skip ";"
         } else if (duration == "auto") {
-            checkVariable();
-            if (tokens[current+1].value == "[") {
-                std::string id = sanitize(Identifier);
-                current++; // Skip identifier 
-                current++; // Skip "["'
-                
-                for (int i = 1; i < stoi(sanitize(Literal)); i++) {
-                    if (scopeTree.size()==1) {
-                        vartable[id] = {0};
-                    } else {
-                        vartable[id] = scopeTree;
-                    }
-                }
-                
-                if (tokens[current].value == "]") {
-                    current++; // Skip "]"
-                    if (tokens[current].value != "=") error(UnexpectedToken, tokens[current]);
-                    current++; // Skip "="
-                    LiteralExpression arr = parseArray();
-                    for (int i = 1; i < arr.array.size(); i++) {
-                        vartable[id + std::to_string(i)] = scopeTree;
-                    }
-                    current = startpos;
-                    print
-                    Statement ret = parseExpression();
-                    current++; // Skip ";"
-                    return ret;
-                } else {
-                    for (int i = 1; i < stoi(sanitize(Literal)); i++) {
-                        if (scopeTree.size()==1) {
-                            vartable[id + std::to_string(i)] = {0};
-                        } else {
-                            vartable[id + std::to_string(i)] = scopeTree;
-                        }
-                    }
-                    current++; // Skip the number inside the brackets
-                    current++; // Skip "]"
-                    if (tokens[current].value != ";") {
-                        current = startpos;
-                        Statement ret = parseExpression();
-                        current++; // Skip ";"
-                        return ret;
-                    }
-                }
+            parseVariable(true, false);
+            if (tokens[current].value != ";") {
+                current = startpos;
+                Statement ret = parseExpression();
                 current++; // Skip ";"
-            } else {
-                if (scopeTree.size()==1) {
-                    vartable[sanitize(Identifier)] = {0};
-                } else {
-                    vartable[sanitize(Identifier)] = scopeTree;
-                }
-                current++; // Skip identifier
-                if (tokens[current].value != ";") {
-                        current = startpos;
-                        Statement ret = parseExpression();
-                        current++; // Skip ";"
-                        return ret;
-                    }
-                current++; // Skip ";"
+                return ret;
             }
+            current++; // Skip ";"
         }
+        return Statement();
+    }
+
+    Statement parseTemplateDefinition() {
+        current++; // Skip "template"
+        std::string id = sanitize(Identifier);
+        current++; // Skip identifier
+        std::map<std::string, VariableData> ret;
+        skip("<");
+        while (tokens[current].value != ">") {
+            std::string varName = tokens[current+1].value;
+            VariableData variable = parseVariable(false, true, true);
+            ret[varName] = variable;    
+            if (tokens[current].value == ",") current++; // Skip the commas
+        }
+        templatetable[id] = ret;
+        current++; // Skip ">"
+        current++; // Skip ";" 
         return Statement();
     }
 };
@@ -1311,10 +1400,12 @@ private:
     std::string keywords[26] = {
         // Structures
         "if", "else", "while", "for", "do", "switch", "case", "default", "break", "continue", "fn", "return",
-        // Data types (reserved)
-        "int", "float", "bool", "char", "short", "long", "double", "enum", "struct", "template",
+        // Data types
+        "int", "short", "long", "template",
         // Storage duration
         "auto", "static", "extrn",
+        // Reserved (not in present use)
+        "float", "bool", "struct", "double", "enum", "char",
         // VERY important
         "gooning"
         };
@@ -1355,29 +1446,30 @@ private:
     }
 
     Token number(bool negative = false) {
+        unsigned int startcol = column;
         std::string num = negative ? "-" : "";
         while (currentPos < source.size() && isdigit(source[currentPos])) {
             num += source[currentPos++];
             column++;
-            if (source[currentPos] == 'x' || source[currentPos] == 'X') {
+            if ((source[currentPos] == 'x' || source[currentPos] == 'X') && num == "0") {
                 column++; currentPos++;
                 num = "";
                 while (currentPos < source.size() && (isalnum(source[currentPos]))) {
                     num += source[currentPos++];
                     column++;
                 }
-                return {Literal, std::to_string(stoi(num, nullptr, 16)), line, column};
-            } else if (source[currentPos] == 'b' || source[currentPos] == 'B') {
+                return {Literal, std::to_string(stoi(num, nullptr, 16)), line, startcol};
+            } else if ((source[currentPos] == 'b' || source[currentPos] == 'B') && num == "0") {
                 column++; currentPos++;
                 num = "";
                 while (currentPos < source.size() && (isdigit(source[currentPos]))) {
                     num += source[currentPos++];
                     column++;
                 }
-                return {Literal, std::to_string(stoi(num, nullptr, 2)), line, column};
+                return {Literal, std::to_string(stoi(num, nullptr, 2)), line, startcol};
             }
         }
-        return {Literal, num, line, column};
+        return {Literal, num, line, startcol};
     }
 
     void preprocess() {
@@ -1466,12 +1558,30 @@ int main(int argc, char* argv[]) {
         printNode(ast[i], 0);
     }
 
+    // debug!
     for (const auto& pair : vartable) {
         std::cout<<"Variable name: "<<pair.first<<"\t";
         std::cout << "Scope: ";
-        for (int i = 0; i < pair.second.size(); i++) {
-            std::cout << pair.second[i] << " -> ";
+        for (int i = 0; i < pair.second.scope.size(); i++) {
+            std::cout << pair.second.scope[i] << " -> ";
         }
-        std::cout<<"\b\b\b\b   \n";
+        std::cout<<"\b\b\b\b   \t";
+        std::cout << "Size: " << pair.second.size << "\t";
+        std::cout << "Type: " << pair.second.dataType << "\n";
+    }
+
+    for (const auto& pair : templatetable) {
+        std::cout<<"Template: "<<pair.first<<"\n";
+        for (const auto& pair : pair.second) {
+            std::cout<<"  Variable name: "<<pair.first<<"\t";
+            std::cout << "  Scope: ";
+            for (int i = 0; i < pair.second.scope.size(); i++) {
+                std::cout << pair.second.scope[i] << " -> ";
+            }
+            std::cout<<"\b\b\b\b   \t";
+            std::cout << "  Size: " << pair.second.size << "\t";
+            std::cout << "  Type: " << pair.second.dataType << "\t";
+            std::cout << "  Array: " << pair.second.array << "\n";
+        }
     }
 }
