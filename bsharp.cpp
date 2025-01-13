@@ -15,6 +15,7 @@ enum TokenType {
     Identifier,
     Literal,
     Punctuation,
+    Unknown,
     EoF
 };
 
@@ -35,7 +36,7 @@ struct Token {
     statements such as if, while, for, loop can all return something and be used in expressions.
 */
 
-struct DataType; struct VariableData; struct LiteralExpression; struct VariableReference; struct Assignment; struct Operation; struct TernaryOperation; struct FunctionCall;
+struct TemplateItem; struct DataType; struct VariableData; struct LiteralExpression; struct VariableReference; struct Assignment; struct Operation; struct TernaryOperation; struct FunctionCall;
 
 struct Expression {
     enum Type {
@@ -63,6 +64,13 @@ struct Expression {
     Expression(FunctionCall* functionCall) : type(FunctionCallType), functionCall(functionCall) {};
 };
 
+struct TemplateItem {
+    std::string id = "";
+    DataType* dataType;
+    Expression defaultValue;
+    bool hasDefaultValue = false;
+};
+
 struct DataType {
     enum Type {
         Short = 1,
@@ -73,20 +81,20 @@ struct DataType {
     } type = Int;
     bool array = false;
     size_t arraySize = 1;
-    std::vector<std::pair<std::string, DataType>>* templ;
+    std::vector<TemplateItem>* templ;
 
     size_t size() const {
         if (type == Template) {
             size_t s = 0;
-            for (const auto& pair : *(templ)) {
-                s += pair.second.size();
+            for (const auto& item : *(templ)) {
+                s += item.dataType->size();
             }
             return arraySize*s;
         }
         return arraySize*static_cast<int>(type);
     }
 
-    DataType(std::vector<std::pair<std::string, DataType>>* templ) : type(Template), templ(templ) {};
+    DataType(std::vector<TemplateItem>* templ) : type(Template), templ(templ) {};
     DataType(Type type, int arraySize) : type(type), arraySize(arraySize) {if (arraySize > 1) array=true;};
     DataType(int arraySize) : type(Int), arraySize(arraySize) {if (arraySize > 1) array=true;};
     DataType() {};
@@ -146,6 +154,7 @@ struct Assignment { // remember! assignments ALWAYS return the variable after as
 struct Operation { // it also includes conditions. e.g. x>y is an operation with > as the operation. handled different in translation, though.
     Expression a;
     Expression b;
+    bool unary = false;
     std::string operation;
     Operation() {};
     Operation(Expression a, Expression b, std::string operation) : a(a), b(b), operation(operation) {};
@@ -165,7 +174,7 @@ struct FunctionCall {
     FunctionCall() {};
 };
 
-struct Block; struct FunctionDefinition; struct IfStatement; struct SwitchStatement; struct WhileLoop; struct ForLoop; struct ReturnCall; struct BreakCall; struct ContinueCall;
+struct Block; struct FunctionDefinition; struct IfStatement; struct SwitchStatement; struct WhileLoop; struct ForLoop; struct ReturnCall; struct BreakCall; struct ContinueCall; struct InlineAsm;
 
 struct Statement {
     enum Type {
@@ -178,6 +187,7 @@ struct Statement {
         ForLoopType,
         ReturnCallType,
         BreakCallType,
+        InlineAsmType,
         Other
     } type;
 
@@ -190,6 +200,7 @@ struct Statement {
     std::shared_ptr<ForLoop> forLoop;
     std::shared_ptr<ReturnCall> returnCall;
     std::shared_ptr<BreakCall> breakCall;
+    std::shared_ptr<InlineAsm> inlineAsm;
 
     Statement() : type(Other) {};
     Statement(Expression expression) : type(ExpressionType), expression(expression) {};
@@ -201,6 +212,7 @@ struct Statement {
     Statement(ForLoop* forLoop) : type(ForLoopType), forLoop(forLoop) {};
     Statement(ReturnCall* returnCall) : type(ReturnCallType), returnCall(returnCall) {};
     Statement(BreakCall* breakCall) : type(BreakCallType), breakCall(breakCall) {};
+    Statement(InlineAsm* inlineAsm) : type(InlineAsmType), inlineAsm(inlineAsm) {};
 };
 
 struct Block {
@@ -249,6 +261,10 @@ struct BreakCall {
     bool abrupt; // false is continue, true is break
 };
 
+struct InlineAsm {
+    std::string code;
+};
+
 enum ErrorType {
     // Lexer
     PunctuationNotMatched,
@@ -270,10 +286,9 @@ enum ErrorType {
     OperationNotAllowed
 };
 
-
 std::map<std::string, VariableData> vartable; // only global variables. for extrn, the int is -1, and is solved at linking time.
 std::map<std::string, FunctionDefinition> funtable;
-std::map<std::string, std::vector<std::pair<std::string, DataType>>> templatetable;
+std::map<std::string, std::vector<TemplateItem>> templatetable;
 
 std::string sourceCode;
 std::string filename;
@@ -451,7 +466,9 @@ void printExpression(Expression exp, int indent) {
             Operation x = *exp.operation;
             std::cout << std::string(indent, ' ') << "Operation: " << x.operation << std::endl;
             printExpression(x.a, indent+2);
-            printExpression(x.b, indent+2);
+            if (!x.unary) {
+                printExpression(x.b, indent+2);
+            }
             break;
         }
         case 4:
@@ -542,7 +559,11 @@ void printNode(Statement statement, int indent) {
         case 5:
         {
             std::shared_ptr<WhileLoop> x = statement.whileLoop;
-            std::cout << std::string(indent, ' ') << "While loop: " << std::endl;
+            if (x->doWhile) {
+                std::cout << std::string(indent, ' ') << "Do-While loop: " << std::endl;
+            } else {
+                std::cout << std::string(indent, ' ') << "While loop: " << std::endl;
+            }
             std::cout << std::string(indent+2, ' ') << "Condition: " << std::endl;
             printExpression(x->condition, indent+4);
             std::cout << std::string(indent+2, ' ') << "Body: " << std::endl;
@@ -574,10 +595,17 @@ void printNode(Statement statement, int indent) {
         {
             std::shared_ptr<BreakCall> x = statement.breakCall;
             if (x->abrupt) {
-                std::cout << std::string(indent, ' ') << "Break call";
+                std::cout << std::string(indent, ' ') << "Break call" << std::endl;
             } else {
-                std::cout << std::string(indent, ' ') << "Continue call";
+                std::cout << std::string(indent, ' ') << "Continue call" << std::endl;
             }
+            break;
+        }
+        case 9:
+        {
+            std::shared_ptr<InlineAsm> x = statement.inlineAsm;
+            std::cout << std::string(indent, ' ') << "Inline assembly: " << std::endl;
+            std::cout << std::string(indent+2, ' ') << x->code << std::endl;
             break;
         }
     }
@@ -657,17 +685,18 @@ private:
                 dt.arraySize = expr.literalExpression->array.size();
                 return dt;
             } else if (expr.literalExpression->type == LiteralExpression::TemplateInit) {
-                std::vector<std::pair<std::string, DataType>> templ;
+                std::vector<TemplateItem> templ;
                 for (int i = 0; i <expr.literalExpression->array.size(); i++) {
-                    templ.push_back({"", getType(expr.literalExpression->array[i])});
+                    templ.push_back({"", new DataType(getType(expr.literalExpression->array[i])), Expression(), false});
                 }
-                return DataType(new std::vector<std::pair<std::string, DataType>>(templ));;
+                return DataType(new std::vector<TemplateItem>(templ));;
             }
         }
         return DataType();
     }
 
     void matchType(DataType dta, DataType dtb) {
+        /*
         std::cout << dta.type;
         if (dta.array) {
             std::cout << " : " << dta.arraySize;
@@ -677,6 +706,7 @@ private:
             std::cout << " : " << dtb.arraySize;
         }
         std::cout<<"\n"<<std::endl;
+        */
         if (dta.type != dtb.type) error(TypeMismatch, tokens[current]);
         if (dta.array != dtb.array) error(TypeMismatch, tokens[current]);
         if (dta.array && (dta.arraySize != dtb.arraySize)) error(TypeMismatch, tokens[current]);
@@ -684,9 +714,9 @@ private:
             if (dta.templ->size() != dtb.templ->size()) error(TypeMismatch, tokens[current]);
             auto it1 = dta.templ->begin();
             auto it2 = dtb.templ->begin();
-            std::cout<<it2->second.array<<std::endl;
+            std::cout<<it2->dataType->array<<std::endl;
             while (it1 != dta.templ->end() && it2 != dtb.templ->end()) {
-                matchType(it1->second, it2->second);
+                matchType(*it1->dataType, *it2->dataType);
                 it1++; it2++;
             }
         }
@@ -724,7 +754,8 @@ private:
         std::cout << "Parsing token: " << tokens[current].value << std::endl;
         if      (tokens[current].value == "if")         return parseIfStatement();
         else if (tokens[current].value == "switch")     return parseSwitchStatement();
-        else if (tokens[current].value == "while")      return parseWhileLoop();
+        else if (tokens[current].value == "while" ||
+                 tokens[current].value == "do")         return parseWhileLoop();
         else if (tokens[current].value == "for")        return parseForLoop();
         else if (tokens[current].value == "{")          return parseBlock();
         else if (tokens[current].value == "return")     return parseReturnCall();
@@ -739,7 +770,8 @@ private:
                  templatetable.find(tokens[current].value) != templatetable.end()
                                                  )      return parseDeclaration();
         else if (tokens[current].value == "fn")         return parseFunctionDefinition();
-        else if (tokens[current].value == "template")         return parseTemplateDefinition();
+        else if (tokens[current].value == "template")   return parseTemplateDefinition();
+        else if (tokens[current].value == "asm")        return parseInlineAsm();
         else if (tokens[current].value == ";")          {current++; return Statement();}
         else if (tokens[current].type == EoF)           error(UnexpectedEOF, tokens[current]);
         else                                            {Statement ret = parseExpression(); if (tokens[current].value==";") current++; return ret;}
@@ -803,11 +835,11 @@ private:
             DataType type;
             int s = 0;
             for (int i = 0; i < vartable[id].dataType.templ->size(); i++) {
-                if (vartable[id].dataType.templ->at(i).first == tokens[current].value) {
-                    type = vartable[id].dataType.templ->at(i).second;
+                if (vartable[id].dataType.templ->at(i).id == tokens[current].value) {
+                    type = *vartable[id].dataType.templ->at(i).dataType;
                     break;
                 }
-                s += vartable[id].dataType.templ->at(i).second.size();
+                s += vartable[id].dataType.templ->at(i).dataType->size();
             }
             current++; // Skip self-ish?
             VariableReference* var = new VariableReference(VariableReference::Reference, vartable[id]);
@@ -892,6 +924,11 @@ private:
                 VariableReference* var = new VariableReference(parseIdentifier(true));
                 while (tokens[current].value != "=") current++;
                 expressions.push_back(Expression(var));
+            } else if (tokens[current].value == "sizeof") {
+                current++; // Skip self
+                int size = getType(parseExpression(true).expression).size();
+                LiteralExpression* ret = new LiteralExpression(size);
+                expressions.push_back(Expression(ret));
             } else if (tokens[current].type == Identifier || (tokens[current].value == "*" && (current > 0 || tokens[current-1].type != Identifier)) || (tokens[current].value == "&" && tokens[current+1].type == Identifier)) {
                 // Variable
                 VariableReference* var = new VariableReference(parseIdentifier(false));
@@ -927,7 +964,7 @@ private:
                     return expressions[0];
                 }
                 if (expressions.size() != op.size()+1) {
-                    error(UnexpectedToken, tokens[current]);
+                    expressions.push_back(Expression());
                 }
                 op.push_back(tokens[current++].value);
             } else {
@@ -940,7 +977,7 @@ private:
     const std::string augment[15] = {"+=","-=",">>=","<<=","/=","*=","%=","^=","&=","|=","!=","~=", "++", "--", "!!"};
     
     Expression parseOperation(std::vector<Expression> expressions, std::vector<std::string> op) {
-        if (op[0] == "") {
+        if (op[0] == "" || op[0] == ":") {
             return expressions[0];
         } else if (op[0] == "=") {
             // Assignment
@@ -974,6 +1011,30 @@ private:
             
             ret->value = Expression(value);
             return (Expression(ret));
+        } else if (op[0] == "?") {
+            TernaryOperation* ret = new TernaryOperation();
+            ret->condition = expressions[0];
+            expressions.erase(expressions.begin());
+            op.erase(op.begin());
+            ret->a = parseOperation(expressions, op);
+            while (op[0] != ":") {
+                expressions.erase(expressions.begin());
+                op.erase(op.begin());
+            }
+            expressions.erase(expressions.begin());
+            op.erase(op.begin());
+            ret->b = parseOperation(expressions, op);
+            matchType(ret->a, ret->b);
+            return Expression(ret);
+        } else if (op[0] == "~" || op[0] == "!" || op[0] == "-") {
+            Operation* ret = new Operation();
+            ret->operation = op[0];
+            expressions.erase(expressions.begin());
+            op.erase(op.begin());
+            ret->a = parseOperation(expressions, op);
+            if (getType(ret->a).type == DataType::Template || getType(ret->a).array) error(OperationNotAllowed, tokens[current]);
+            ret->unary = true;
+            return Expression(ret);
         } else {
             Operation* ret = new Operation();
             ret->operation = op[0];
@@ -982,9 +1043,9 @@ private:
             op.erase(op.begin());
             ret->b = parseOperation(expressions, op);
             if (getType(ret->a).type == DataType::Template || getType(ret->a).array) error(OperationNotAllowed, tokens[current]);
-            if (getType(ret->a).type == DataType::Template || getType(ret->a).array) error(OperationNotAllowed, tokens[current]);
+            if (getType(ret->b).type == DataType::Template || getType(ret->b).array) error(OperationNotAllowed, tokens[current]);
             return Expression(ret);
-        } // todo: ternary again
+        }
         return Expression();
     }
 
@@ -1093,11 +1154,21 @@ private:
 
     Statement parseWhileLoop() {
         WhileLoop* ret = new WhileLoop();
-        current++; // Skip "while"
-        skip("("); // Skip "("
-        ret->condition = parseExpression().expression;
-        current++; // Skip ")"
-        ret->body = parseStatement();
+        if (tokens[current].value == "do") {
+            current++; // Skip "do"
+            ret->doWhile = true;
+            ret->body = parseStatement();
+            skip("while"); // Skip "("
+            skip("("); // Skip "("
+            ret->condition = parseExpression().expression;
+            current++; // Skip ")"
+        } else {
+            current++; // Skip "while"
+            skip("("); // Skip "("
+            ret->condition = parseExpression().expression;
+            current++; // Skip ")"
+            ret->body = parseStatement();
+        }
         return Statement(ret);
     }
 
@@ -1130,7 +1201,7 @@ private:
         BreakCall* ret = new BreakCall();
         ret->abrupt = true;
         current++; // Skip "break"
-        current++; // Skip ";"
+        skip(";");
         return Statement(ret);
     }
 
@@ -1138,7 +1209,17 @@ private:
         BreakCall* ret = new BreakCall();
         ret->abrupt = false;
         current++; // Skip "continue"
-        current++; // Skip ";"
+        skip(";");
+        return Statement(ret);
+    }
+
+    Statement parseInlineAsm() {
+        InlineAsm* ret = new InlineAsm();
+        current++; // Skip "asm"
+        skip("\"");
+        ret->code = tokens[current++].value;
+        skip("\"");
+        skip(";");
         return Statement(ret);
     }
 
@@ -1229,12 +1310,22 @@ private:
         current++; // Skip "template"
         std::string id = sanitize(Identifier);
         current++; // Skip identifier
-        std::vector<std::pair<std::string, DataType>> ret;
+        std::vector<TemplateItem> ret;
         skip("<");
         while (tokens[current].value != ">") {
             std::string varName = tokens[current+1].value;
-            DataType dt = parseVariable(false, true, true).dataType;
-            ret.push_back({varName, dt});    
+            DataType* dt = new DataType(parseVariable(false, true, true).dataType);
+            if (tokens[current].value == "=") {
+                current++; // Skip "="
+                Expression exp = parseExpression().expression;
+                if (exp.type != Expression::LiteralExpressionType) {
+                    error(OperationNotAllowed, tokens[current]);
+                }
+                matchType(*dt, getType(exp));
+                ret.push_back({varName, dt, exp, true});
+            } else {
+                ret.push_back({varName, dt, Expression(), false});    
+            }
             if (tokens[current].value == ",") current++; // Skip the commas
         }
         templatetable[id] = ret;
@@ -1486,8 +1577,10 @@ public:
                 }
                 column++; currentPos++;
             } else {
+                tokens.push_back({Unknown, std::to_string(source[currentPos]), line, column});
                 column++; currentPos++;
             }
+            
         }
         tokens.push_back({EoF, "", line, column});
         sourceCode = source;
@@ -1498,17 +1591,17 @@ private:
     std::string source;
     size_t currentPos;
     unsigned int line, column;
-    std::string keywords[26] = {
+    std::string keywords[27] = {
         // Structures
         "if", "else", "while", "for", "do", "switch", "case", "default", "break", "continue", "fn", "return",
         // Data types
         "int", "short", "long", "template",
         // Storage duration
         "auto", "static", "extrn",
+        // Other  
+        "sizeof", "asm",
         // Reserved (not in present use)
-        "float", "bool", "struct", "double", "enum", "char",
-        // VERY important
-        "gooning"
+        "float", "bool", "double", "enum", "char", "union",
         };
 
     std::unordered_map<char, char> escape = {
@@ -1526,7 +1619,7 @@ private:
 
     Token identifier() {
         std::string id;
-        while (currentPos < source.size() && (isalnum(source[currentPos]))) {
+        while (currentPos < source.size() && (isalnum(source[currentPos]) || source[currentPos] == '_')) {
             id += source[currentPos++];
             column++;
         }
@@ -1537,7 +1630,7 @@ private:
             }
         }
 
-        for (int i = 0; i < 26; i++) {
+        for (int i = 0; i < 27; i++) {
             if (keywords[i] == id) {
                 return {Keyword, id};
             }
@@ -1647,19 +1740,20 @@ int main(int argc, char* argv[]) {
     Lexer lexer(sourceCode);
     std::vector<Token> tokens = lexer.tokenize();
     int it = 0;
+    /*
     for (const auto& token : tokens) {
         std::cout << it << " Token: " << token.value << " Type: " << static_cast<int>(token.type) 
                 << " Line: " << token.line << " Column: " << token.column << std::endl;
         it++;
     }
-
+    */
     Parser parser(tokens);
     std::vector<Statement> ast = parser.parse();
+
+    std::cout<< "Parsing over." << std::endl;
     for (int i = 0; i < ast.size(); i++) {
         printNode(ast[i], 0);
     }
-
-    std::cout<< "Parsing over." << std::endl;
 
     // debug!
     for (const auto& pair : vartable) {
@@ -1675,12 +1769,17 @@ int main(int argc, char* argv[]) {
 
     for (const auto& templ : templatetable) {
         std::cout<<"Template: "<<templ.first<<"\n";
-        for (const auto& pair : templ.second) {
-            std::cout<<"  Variable name: "<<pair.first<<"\t";
+        for (const auto& item : templ.second) {
+            std::cout<<"  Variable name: "<<item.id<<"\t";
             std::cout<<"\b\b\b\b   \t";
-            std::cout << "  Size: " << pair.second.size()<< "\t";
-            std::cout << "  Type: " << pair.second.type<< "\t";
-            std::cout << "  Array: " << pair.second.array << "\n";
+            std::cout << "  Size: " << item.dataType->size()<< "\t";
+            std::cout << "  Type: " << item.dataType->type<< "\t";
+            std::cout << "  Array: " << item.dataType->array;
+            if (item.hasDefaultValue) {
+                std::cout << "  Default: ";
+                printExpression(item.defaultValue,0);
+            }
+            std::cout << "\n";
         }
     }
 }
