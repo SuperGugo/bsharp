@@ -10,6 +10,9 @@
 #include <iomanip>
 
 #define print std::cout<<tokens[current].value<<std::endl;
+
+
+
 enum TokenType {
     Keyword,
     Identifier,
@@ -36,7 +39,7 @@ struct Token {
     statements such as if, while, for, loop can all return something and be used in expressions.
 */
 
-struct TemplateItem; struct DataType; struct VariableData; struct LiteralExpression; struct VariableReference; struct Assignment; struct Operation; struct TernaryOperation; struct FunctionCall;
+struct TemplateItem; struct DataType; struct VariableData; struct LiteralExpression; struct VariableReference; struct Assignment; struct Operation; struct TernaryOperation; struct FunctionCall; struct Cast;
 
 struct Expression {
     enum Type {
@@ -45,7 +48,8 @@ struct Expression {
         AssignmentType,
         OperationType,
         TernaryOperationType,
-        FunctionCallType
+        FunctionCallType,
+        CastType
     } type;
 
     std::shared_ptr<LiteralExpression> literalExpression;
@@ -54,6 +58,7 @@ struct Expression {
     std::shared_ptr<Operation> operation;
     std::shared_ptr<TernaryOperation> ternaryOperation;
     std::shared_ptr<FunctionCall> functionCall;
+    std::shared_ptr<Cast> cast;
 
     Expression() {};
     Expression(LiteralExpression* literalExpression) : type(LiteralExpressionType), literalExpression(literalExpression) {};
@@ -62,6 +67,7 @@ struct Expression {
     Expression(Operation* operation) : type(OperationType), operation(operation) {};
     Expression(TernaryOperation* ternaryOperation) : type(TernaryOperationType), ternaryOperation(ternaryOperation) {};
     Expression(FunctionCall* functionCall) : type(FunctionCallType), functionCall(functionCall) {};
+    Expression(Cast* cast) : type(CastType), cast(cast) {};
 };
 
 struct TemplateItem {
@@ -73,20 +79,26 @@ struct TemplateItem {
 
 struct DataType {
     enum Type {
-        Short = 1,
-        Int = 2,
-        Long = 4,
+        Char = 1,           // Always a byte
+        Short = 2,          // Always a word
+        Int = 4,            // >= 16 bit
+        Long = 8,           // >= 32 bit
+        Float = 4,          
+        Double = 8,
+        AmbiguousInteger,// literal. doesnt do anything on its own but can match with anything
         Template,
         Array,
-        Unknown // pointers and such. you can put anything here
+        Union,
+        Enum
     } type = Int;
     DataType* arrayType;
     size_t arraySize = 1;
     std::vector<TemplateItem>* templ;
     bool pointer = false;
+    bool sign = true;
 
     size_t size() const {
-        if (pointer) {return 2;}
+        if (pointer) {return Int;}
         if (type == Array) {
             return arraySize*arrayType->size();
         } else {
@@ -94,6 +106,14 @@ struct DataType {
                 size_t s = 0;
                 for (const auto& item : *(templ)) {
                     s += item.dataType->size();
+                }
+                return s;
+            } else if (type == Union) {
+                size_t s = 0;
+                for (const auto& item : *(templ)) {
+                    if ( item.dataType->size() > s) {
+                        s = item.dataType->size();
+                    }
                 }
                 return s;
             }
@@ -179,6 +199,12 @@ struct FunctionCall {
     std::string identifier;
     std::vector<Expression> arguments;
     FunctionCall() {};
+};
+
+struct Cast {
+    Expression from;
+    DataType to;
+    Cast() {};
 };
 
 struct Block; struct FunctionDefinition; struct IfStatement; struct SwitchStatement; struct WhileLoop; struct ForLoop; struct ReturnCall; struct BreakCall; struct ContinueCall; struct InlineAsm;
@@ -501,6 +527,19 @@ void printExpression(Expression exp, int indent) {
             }
             break;
         }
+        case 6:
+        {
+            Cast x = *exp.cast;
+            std::cout << std::string(indent, ' ') << "Cast: " << std::endl;
+            std::cout << std::string(indent+2, ' ') << "From: " << std::endl;
+            printExpression(x.from, indent+4);
+            std::cout << std::string(indent+2, ' ') << "To: " << std::endl;
+            std::cout << std::string(indent+4, ' ') << "Data Type: " << x.to.type<< std::endl;
+            std::cout << std::string(indent+4, ' ') << "Size: " << x.to.size() << std::endl;
+            std::cout << std::string(indent+4, ' ') << "Pointer: " << x.to.pointer << std::endl;
+
+            break;
+        }
     }
 }
 
@@ -670,11 +709,12 @@ private:
     }
 
     DataType getType(Expression expr) {
-        
-        if (expr.type == Expression::TernaryOperationType) return getType(expr.ternaryOperation->a);
+        if (expr.type == Expression::TernaryOperationType) return (getType(expr.ternaryOperation->a).type == DataType::AmbiguousInteger ? getType(expr.ternaryOperation->b) : getType(expr.ternaryOperation->a));
         if (expr.type == Expression::AssignmentType) return expr.assignment->variable.var.dataType;
         if (expr.type == Expression::VariableReferenceType) return expr.variableReference->var.dataType;
-        if (expr.type == Expression::FunctionCallType) { return funtable[expr.functionCall->identifier].returnType; }
+        if (expr.type == Expression::FunctionCallType) return funtable[expr.functionCall->identifier].returnType;
+        if (expr.type == Expression::CastType) return expr.cast->to;
+        if (expr.type == Expression::OperationType) return (getType(expr.operation->a).type == DataType::AmbiguousInteger ? getType(expr.operation->b) : getType(expr.operation->a));
         if (expr.type == Expression::LiteralExpressionType) {
             if (expr.literalExpression->type == LiteralExpression::Array) {
                 DataType* dt = new DataType(getType(expr.literalExpression->array[0]));
@@ -686,6 +726,8 @@ private:
                     templ.push_back({"", new DataType(getType(expr.literalExpression->array[i])), Expression(), false});
                 }
                 return DataType(new std::vector<TemplateItem>(templ));;
+            } else {
+                return DataType(DataType::AmbiguousInteger);
             }
         }
         return DataType();
@@ -710,8 +752,7 @@ private:
         if (dta.type == DataType::Array && dtb.pointer) {dtb.pointer = 0; matchType(*dta.arrayType, dtb); return;};
         if (dtb.type == DataType::Array && dta.pointer) {dta.pointer = 0; matchType(*dtb.arrayType, dta); return;};
         if (dta.pointer != dtb.pointer) error(TypeMismatch, tokens[current]);
-
-        if (dta.type == DataType::Unknown || dtb.type == DataType::Unknown) return;
+        if (dta.type == DataType::AmbiguousInteger || dtb.type == DataType::AmbiguousInteger) return;
         if (dta.type != dtb.type) error(TypeMismatch, tokens[current]);
         if (dta.type == DataType::Array && (dta.arraySize != dtb.arraySize)) error(TypeMismatch, tokens[current]);
         if (dta.type == DataType::Array) matchType(*dta.arrayType, *dtb.arrayType);
@@ -768,6 +809,9 @@ private:
                  tokens[current].value == "int" ||
                  tokens[current].value == "short" ||
                  tokens[current].value == "long" ||
+                 tokens[current].value == "char" ||
+                 tokens[current].value == "double" ||
+                 tokens[current].value == "float" ||
                  templatetable.find(tokens[current].value) != templatetable.end()
                                                  )      return parseDeclaration();
         else if (tokens[current].value == "fn")         return parseFunctionDefinition();
@@ -949,7 +993,7 @@ private:
             } else if (tokens[current].value == "auto" || tokens[current].value == "static") {
                 // Assignment coming from declaration
                 current++; // Skip storage duration
-                if (tokens[current].value == "int" || tokens[current].value == "short" || tokens[current].value == "long" || templatetable.find(tokens[current].value) != templatetable.end()) current++; // Skip data type
+                if (tokens[current].value == "int" || tokens[current].value == "short" || tokens[current].value == "long"  || tokens[current].value == "float"  || tokens[current].value == "double"  || tokens[current].value == "char" || templatetable.find(tokens[current].value) != templatetable.end()) current++; // Skip data type
                 if (tokens[current].value == "*") current++; // Skip pointer thingy
                 VariableReference* var = new VariableReference(parseIdentifier(true));
                 while (tokens[current].value != "=") current++;
@@ -984,6 +1028,33 @@ private:
                 }
                 current++; // Skip self
                 expressions.push_back(Expression(lit));
+            } else if (tokens[current].value == "int" || tokens[current].value == "short" || tokens[current].value == "long"  || tokens[current].value == "float"  || tokens[current].value == "double"  || tokens[current].value == "char") {
+                Cast* ret = new Cast();
+                DataType dt;
+                if (tokens[current].value == "int") {
+                    dt.type = DataType::Int;
+                    current++;
+                } else if (tokens[current].value == "short") {
+                    dt.type = DataType::Short;
+                    current++;
+                } else if (tokens[current].value == "long") {
+                    dt.type = DataType::Long;
+                    current++;
+                } else if (tokens[current].value == "char") {
+                    dt.type = DataType::Char;
+                    current++;
+                } else if (tokens[current].value == "float") {
+                    dt.type = DataType::Float;
+                    current++;
+                } else if (tokens[current].value == "double") {
+                    dt.type = DataType::Double;
+                    current++;
+                }
+                if (tokens[current].value == "*") { dt.pointer = true; current++; }
+                ret->to = dt;
+                ret->from = parseExpression().expression;
+                if (!getType(ret->from).pointer && (getType(ret->from).type == DataType::Array || getType(ret->from).type == DataType::Template)) error(OperationNotAllowed, tokens[current-1]);
+                expressions.push_back(Expression(ret));
             } else if (tokens[current].value == "(") {
                 current++; // Skip "("
                 expressions.push_back(parseExpression().expression);
@@ -1103,6 +1174,15 @@ private:
             current++;
         } else if (tokens[current].value == "long") {
             ret->returnType.type = DataType::Long;
+            current++;
+        } else if (tokens[current].value == "char") {
+            ret->returnType.type = DataType::Char;
+            current++;
+        } else if (tokens[current].value == "float") {
+            ret->returnType.type = DataType::Float;
+            current++;
+        } else if (tokens[current].value == "double") {
+            ret->returnType.type = DataType::Double;
             current++;
         } else if (templatetable.find(tokens[current].value) != templatetable.end()) {
             ret->returnType.type = DataType::Template;
@@ -1254,9 +1334,6 @@ private:
     }
 
     VariableData parseVariable(bool autoSize, bool global, bool abstract = false) {
-        if (!abstract) {
-            checkVariable();
-        }
         VariableData var;
         if (global) var.scope = {0};
         else var.scope = scopeTree;
@@ -1268,6 +1345,15 @@ private:
             current++;
         } else if (tokens[current].value == "long") {
             var.dataType.type = DataType::Long;
+            current++;
+        } else if (tokens[current].value == "char") {
+            var.dataType.type = DataType::Char;
+            current++;
+        } else if (tokens[current].value == "float") {
+            var.dataType.type = DataType::Float;
+            current++;
+        } else if (tokens[current].value == "double") {
+            var.dataType.type = DataType::Double;
             current++;
         } else if (templatetable.find(tokens[current].value) != templatetable.end()) {
             var.dataType.type = DataType::Template;
@@ -1283,6 +1369,9 @@ private:
         }
         
         var.identifier = sanitize(Identifier);
+        if (!abstract) {
+            checkVariable();
+        }
         current++; // Skip identifier
         while (tokens[current].value == "[") {
             var.dataType.arrayType = new DataType(var.dataType);
@@ -1322,20 +1411,26 @@ private:
             skip(";");
         } else if (duration == "static") {
             parseVariable(true, true);
-            if (tokens[current].value != ";") {
+            if (tokens[current].value == "=") {
                 current = startpos;
                 Statement ret = parseExpression();
                 current++; // Skip ";"
                 return ret;
             }
+            if (tokens[current].value != ";") {
+                error(UnexpectedToken, tokens[current]);
+            }
             current++; // Skip ";"
         } else if (duration == "auto") {
             parseVariable(true, false);
-            if (tokens[current].value != ";") {
+            if (tokens[current].value == "=") {
                 current = startpos;
                 Statement ret = parseExpression();
                 current++; // Skip ";"
                 return ret;
+            }
+            if (tokens[current].value != ";") {
+                error(UnexpectedToken, tokens[current]);
             }
             current++; // Skip ";"
         }
@@ -1344,7 +1439,7 @@ private:
     }
 
     Statement parseTemplateDefinition() {
-        current++; // Skip "template"
+        current++; // Skip "template"/"union"
         std::string id = sanitize(Identifier);
         current++; // Skip identifier
         std::vector<TemplateItem> ret;
@@ -1637,13 +1732,13 @@ private:
         // Structures
         "if", "else", "while", "for", "do", "switch", "case", "default", "break", "continue", "fn", "return",
         // Data types
-        "int", "short", "long", "template",
+        "char", "short", "int", "long", "float", "double", "template",
         // Storage duration
         "auto", "static", "extrn",
         // Other  
         "sizeof", "asm",
         // Reserved (not in present use)
-        "float", "bool", "double", "enum", "char", "union",
+        "bool", "union", "enum",
         };
 
     std::unordered_map<char, char> escape = {
