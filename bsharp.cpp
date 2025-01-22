@@ -49,7 +49,8 @@ struct Expression {
         OperationType,
         TernaryOperationType,
         FunctionCallType,
-        CastType
+        CastType,
+        Other
     } type;
 
     std::shared_ptr<LiteralExpression> literalExpression;
@@ -60,7 +61,7 @@ struct Expression {
     std::shared_ptr<FunctionCall> functionCall;
     std::shared_ptr<Cast> cast;
 
-    Expression() {};
+    Expression() : type(Other) {};
     Expression(LiteralExpression* literalExpression) : type(LiteralExpressionType), literalExpression(literalExpression) {};
     Expression(VariableReference* variableReference) : type(VariableReferenceType), variableReference(variableReference) {};
     Expression(Assignment* assignment) : type(AssignmentType), assignment(assignment) {};
@@ -79,13 +80,13 @@ struct TemplateItem {
 
 struct DataType {
     enum Type {
-        Char = 1,           // Always a byte
-        Short = 2,          // Always a word
-        Int = 4,            // >= 16 bit
-        Long = 8,           // >= 32 bit
-        Float = 4,          
-        Double = 8,
-        AmbiguousInteger,// literal. doesnt do anything on its own but can match with anything
+        Char,
+        Short,
+        Int,
+        Long,
+        Float,          
+        Double,
+        AmbiguousInteger, // literal. doesnt do anything on its own but can match with anything
         Template,
         Array,
         Union,
@@ -99,16 +100,19 @@ struct DataType {
 
     size_t size() const {
         if (pointer) {return Int;}
-        if (type == Array) {
-            return arraySize*arrayType->size();
-        } else {
-            if (type == Template) {
+        switch (type) {
+            case Array:
+                return arraySize*arrayType->size();
+            case Template:
+            {
                 size_t s = 0;
                 for (const auto& item : *(templ)) {
                     s += item.dataType->size();
                 }
                 return s;
-            } else if (type == Union) {
+            }
+            case Union:
+            {
                 size_t s = 0;
                 for (const auto& item : *(templ)) {
                     if ( item.dataType->size() > s) {
@@ -117,9 +121,19 @@ struct DataType {
                 }
                 return s;
             }
-            return static_cast<int>(type);
-        }
-        
+            case Char:
+                return 1;
+            case Short:
+                return 2;
+            case Int:
+                return 4;
+            case Long:
+                return 8;
+            case Float:
+                return 4;
+            case Double:
+                return 8;
+        }        
     }
 
     DataType(std::vector<TemplateItem>* templ) : type(Template), templ(templ) {};
@@ -140,7 +154,6 @@ struct LiteralExpression {
     enum Type {
         Integer,
         Floating,
-        Char,
         Array,
         TemplateInit
     } type;
@@ -151,7 +164,6 @@ struct LiteralExpression {
 
     LiteralExpression() {};
     LiteralExpression(int integer) : type(Integer), integer(integer) {};
-    LiteralExpression(char character) : type(Char), integer((int)character) {};
     LiteralExpression(float floating) : type(Floating), floating(floating) {};
 };
 
@@ -255,6 +267,7 @@ struct Block {
 struct FunctionDefinition {
     std::string identifier;
     std::vector<VariableData> parameters; // each parameter includes a declaration (local) during parsing.
+    std::vector<Expression> defaults;
     Statement body;
     DataType returnType;
 };
@@ -422,11 +435,6 @@ void printExpression(Expression exp, int indent) {
                 case 1:
                 {
                     std::cout << std::string(indent, ' ') << "Floating: " << x.floating << std::endl;
-                    break;
-                }
-                case 2:
-                {
-                    std::cout << std::string(indent, ' ') << "Char: " << (char)x.integer << std::endl;
                     break;
                 }
                 case 3:
@@ -673,7 +681,8 @@ private:
     size_t current;
     int scope;
     std::vector<int> scopeTree;
-    
+    DataType returnType;
+
     // If the current token is of the right type, its value is returned. Otherwise, an error is thrown.
     std::string sanitize(TokenType type) {
         if (tokens[current].type != type) {
@@ -726,6 +735,8 @@ private:
                     templ.push_back({"", new DataType(getType(expr.literalExpression->array[i])), Expression(), false});
                 }
                 return DataType(new std::vector<TemplateItem>(templ));;
+            } else if (expr.literalExpression->type == LiteralExpression::Floating) {
+                return DataType(DataType::Float);
             } else {
                 return DataType(DataType::AmbiguousInteger);
             }
@@ -751,8 +762,8 @@ private:
 
         if (dta.type == DataType::Array && dtb.pointer) {dtb.pointer = 0; matchType(*dta.arrayType, dtb); return;};
         if (dtb.type == DataType::Array && dta.pointer) {dta.pointer = 0; matchType(*dtb.arrayType, dta); return;};
-        if (dta.pointer != dtb.pointer) error(TypeMismatch, tokens[current]);
         if (dta.type == DataType::AmbiguousInteger || dtb.type == DataType::AmbiguousInteger) return;
+        if (dta.pointer != dtb.pointer) error(TypeMismatch, tokens[current]);
         if (dta.type != dtb.type) error(TypeMismatch, tokens[current]);
         if (dta.type == DataType::Array && (dta.arraySize != dtb.arraySize)) error(TypeMismatch, tokens[current]);
         if (dta.type == DataType::Array) matchType(*dta.arrayType, *dtb.arrayType);
@@ -983,7 +994,13 @@ private:
                     if (tokens[current].value == ",") current++; // Skip the commas
                 }
                 if (ret->arguments.size() != funtable[ret->identifier].parameters.size()) {
-                    error(ParameterMismatch, tokens[current-1]);
+                    for (int i = ret->arguments.size(); i < funtable[ret->identifier].parameters.size(); i++) {
+                        if (funtable[ret->identifier].defaults[i].type != Expression::Other) {
+                            ret->arguments.push_back(funtable[ret->identifier].defaults[i]);
+                        } else {
+                            error(ParameterMismatch, tokens[current-1]);
+                        }
+                    }
                 }
                 for (int i = 0; i < ret->arguments.size(); i++) {
                     matchType(getType(ret->arguments[i]), funtable[ret->identifier].parameters[i].dataType);
@@ -1021,6 +1038,12 @@ private:
 
                 if (isdigit(tokens[current].value[0]) || tokens[current].value[0] == '-') {
                     *lit = LiteralExpression(stoi(tokens[current].value)); // TODO: floats
+                    if (tokens[current+1].value == ".") {
+                        current++;
+                        std::string fl = std::to_string(lit->integer) + "." + tokens[current+1].value;
+                        lit->floating = std::stof(fl);
+                        lit->type = LiteralExpression::Floating;
+                    }
                 } else {
                     skip("'");
                     *lit = LiteralExpression(tokens[current].value[0]);
@@ -1191,6 +1214,8 @@ private:
         } else {
             ret->returnType.type = DataType::Int;
         }
+        if (tokens[current].value == "*") {ret->returnType.pointer = true; current++;}
+        returnType = ret->returnType.type;
         ret->identifier = tokens[current++].value;
         if (funtable.find(ret->identifier) != funtable.end()) {
             error(FunctionAlreadyDefined, tokens[current-1]);
@@ -1198,6 +1223,20 @@ private:
         skip("("); // Skip "("
         while (tokens[current].value != ")") {
             ret->parameters.push_back(parseVariable(false, false));
+            ret->defaults.push_back(Expression());
+            if (tokens[current].value == "=") {
+                current++; // Skip "="
+                Expression exp = parseExpression(true).expression;
+                if (exp.type != Expression::LiteralExpressionType) {
+                    error(OperationNotAllowed, tokens[current]);
+                }
+                matchType(ret->parameters[ret->parameters.size()-1].dataType, getType(exp));
+                ret->defaults[ret->defaults.size()-1] = exp;
+            } else {
+                if (ret->defaults.size() > 1 && ret->defaults[ret->defaults.size()-2].type != Expression::Other) {
+                    error(UnexpectedToken, tokens[current]);
+                }
+            }
             if (tokens[current].value == ",") current++; // Skip the commas
         }
         current++; // Skip ")"
@@ -1302,7 +1341,9 @@ private:
             ret->toReturn = Expression(new LiteralExpression(0));
         } else {
             ret->toReturn = parseExpression().expression;
+            matchType(getType(ret->toReturn), returnType);
         }
+        
         current++; // Skip ";"
         return Statement(ret);
     }
