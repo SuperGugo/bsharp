@@ -9,9 +9,13 @@
 #include <memory>
 #include <iomanip>
 
-#define print std::cout<<tokens[current].value<<std::endl;
+#define debug std::cout<<"debug"<<std::endl;
 
-
+enum CompilationTarget {
+    // AT_T,
+    NASM,
+    MASCHINE
+};
 
 enum TokenType {
     Keyword,
@@ -153,6 +157,7 @@ struct VariableData {
     DataType dataType;
     std::string identifier;
     std::vector<int> scope;
+    long offset = 0;
     VariableData() {};
     VariableData(DataType dataType) : dataType(dataType) {};
 };
@@ -493,10 +498,11 @@ void printExpression(Expression exp, int indent) {
                 for (int i = 0; i < x.var.scope.size(); i++) {
                     std::cout << x.var.scope[i] << " -> ";
                 }
+                std::cout<<"\b\b\b\b   \n";
+                std::cout << std::string(indent+2, ' ') << "Offset: " << x.var.offset << std::endl;
             } else {
                 printExpression(x.position, indent+2);
             }
-            std::cout<<"\b\b\b\b   \n";
             std::cout << std::string(indent+2, ' ') << "Data Type: " << x.var.dataType.type<< std::endl;
             std::cout << std::string(indent+2, ' ') << "Size: " << x.var.dataType.size() << std::endl;
             std::cout << std::string(indent+2, ' ') << "Array: " << x.var.dataType.arraySize << std::endl;
@@ -678,6 +684,99 @@ void printNode(Statement statement, int indent) {
     }
 }
 
+class Translator {
+public:
+    Translator(const std::vector<Statement> ast, const CompilationTarget target) : ast(ast), target(target) {}
+    std::vector<std::string> translate() {
+        for (int i = 0; i < ast.size(); i++) {
+            translateStatement(ast[i]);
+        }
+        return assembly;
+    }
+private:
+    const std::vector<Statement> ast;
+    const CompilationTarget target;
+    std::vector<std::string> assembly;
+
+    void translateStatement(Statement x) {
+        std::cout << "Translating: " << x.type << std::endl;
+        switch (x.type) {
+            case 0:
+                translateExpression(x.expression);
+                break;
+            case 1:
+                translateBlock(*x.block);
+                break;
+            case 2:
+                translateFunctionDefinition(*x.functionDefinition);
+                break;
+            case 3:
+                translateIfStatement(*x.ifStatement);
+                break;
+            case 4:
+                translateSwitchStatement(*x.switchStatement);
+                break;
+            case 5:
+                translateWhileLoop(*x.whileLoop);
+                break;
+            case 6:
+                translateForLoop(*x.forLoop);
+                break;
+            case 7:
+                translateReturnCall(*x.returnCall);
+                break;
+            case 8:
+                translateBreakCall(*x.breakCall);
+                break;
+            case 9:
+                translateInlineAsm(*x.inlineAsm);
+                break;
+            default:
+                break;
+        }
+    }
+
+    void translateExpression(Expression x) {
+
+    }
+
+    void translateBlock(Block x) {
+
+    }
+
+    void translateFunctionDefinition(FunctionDefinition x) {
+
+    }
+
+    void translateIfStatement(IfStatement x) {
+
+    }
+
+    void translateSwitchStatement(SwitchStatement x) {
+
+    }
+
+    void translateWhileLoop(WhileLoop x) {
+
+    }
+
+    void translateForLoop(ForLoop x) {
+
+    }
+
+    void translateReturnCall(ReturnCall x) {
+
+    }
+
+    void translateBreakCall(BreakCall x) {
+
+    }
+
+    void translateInlineAsm(InlineAsm x) {
+
+    }
+};
+
 class Parser {
 public:
     Parser(const std::vector<Token>& tokens) : tokens(tokens), current(0), scope(0), scopeTree({0}) {}
@@ -715,12 +814,12 @@ private:
         current++;
     }
     
-    bool matchScope(std::vector<int> toMatch) {
-        if (toMatch.size() > scopeTree.size()) {
+    bool matchScope(std::vector<int> a, std::vector<int> b) {
+        if (a.size() > b.size()) {
             return false;
         }
-        for (int i = 0; i < scopeTree.size(); ++i) {
-            if (toMatch[i] != scopeTree[i]) {
+        for (int i = 0; i < a.size(); ++i) {
+            if (a[i] != b[i]) {
                 return false;
             }
         }
@@ -755,7 +854,7 @@ private:
     }
 
     void matchType(DataType dta, DataType dtb) {
-        
+        /*
         std::cout << dta.type;
         if (dta.type == DataType::Array) {
             std::cout << " : " << dta.arraySize;
@@ -769,7 +868,7 @@ private:
         }
         std::cout << " -> " << dtb.pointer;
         std::cout<<"\n"<<std::endl;
-
+        */
         if (dta.type == DataType::Array && dtb.pointer) {dtb.pointer = 0; matchType(*dta.arrayType, dtb); return;};
         if (dtb.type == DataType::Array && dta.pointer) {dta.pointer = 0; matchType(*dtb.arrayType, dta); return;
         };
@@ -800,7 +899,7 @@ private:
         if (definition) {
             if (vartable.find(tokens[current].value) != vartable.end()) {
                 std::vector<int> s = vartable[tokens[current].value].scope;
-                if (matchScope(s)) {
+                if (matchScope(s, scopeTree)) {
                     error(VariableAlreadyDefined, tokens[current]);
                 }
             }
@@ -809,7 +908,7 @@ private:
                 error(UndefinedVariable, tokens[current]);
             }
             std::vector<int> s = vartable[tokens[current].value].scope;
-            if (!matchScope(s)) {
+            if (!matchScope(s, scopeTree)) {
                 error(UndefinedVariable, tokens[current]);
             }
         }
@@ -1592,6 +1691,11 @@ private:
             }
         }
         if (!abstract) {
+            for (auto const& v : vartable) {
+                if (v.second.scope.size() > 1 && matchScope(v.second.scope, var.scope)) {
+                    var.offset+=v.second.dataType.size();
+                }
+            }
             vartable[var.identifier] = var;
         }
         return var;
@@ -2082,11 +2186,13 @@ int main(int argc, char* argv[]) {
     std::vector<Token> tokens = lexer.tokenize();
     int it = 0;
     
+    std::cout<< "Lexing over." << std::endl;
     for (const auto& token : tokens) {
         std::cout << it << " Token: " << token.value << " Type: " << static_cast<int>(token.type) 
                 << " Line: " << token.line << " Column: " << token.column << std::endl;
         it++;
     }
+    std::cout<<std::endl;
     
     Parser parser(tokens);
     std::vector<Statement> ast = parser.parse();
@@ -2095,7 +2201,8 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < ast.size(); i++) {
         printNode(ast[i], 0);
     }
-
+    std::cout<<std::endl;
+    
     // debug!
     for (const auto& pair : vartable) {
         std::cout<<"Variable name: "<<pair.first<<"\t";
@@ -2104,8 +2211,11 @@ int main(int argc, char* argv[]) {
             std::cout << pair.second.scope[i] << " -> ";
         }
         std::cout<<"\b\b\b\b   \t";
+        std::cout << "Offset: " << pair.second.offset<< "\t";
+        
         std::cout << "Size: " << pair.second.dataType.size()<< "\t";
         std::cout << "Type: " << pair.second.dataType.type<< "\n";
+        
     }
 
     for (const auto& templ : templatetable) {
@@ -2122,5 +2232,14 @@ int main(int argc, char* argv[]) {
             }
             std::cout << "\n";
         }
+    }
+    
+
+    Translator translator(ast, NASM);
+    std::vector<std::string> assembly = translator.translate();
+
+    std::cout<< "Translation over." << std::endl;
+    for (int i = 0; i < assembly.size(); i++) {
+        std::cout<<assembly[i]<<std::endl;
     }
 }
