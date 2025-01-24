@@ -76,6 +76,10 @@ struct TemplateItem {
     DataType* dataType;
     Expression defaultValue;
     bool hasDefaultValue = false;
+
+    bool operator==(const TemplateItem& other) const {
+        return id == other.id && dataType == other.dataType;
+    }
 };
 
 struct DataType {
@@ -133,7 +137,10 @@ struct DataType {
                 return 4;
             case Double:
                 return 8;
+            case AmbiguousInteger:
+                return 8;
         }        
+        return 0;
     }
 
     DataType(std::vector<TemplateItem>* templ) : type(Template), templ(templ) {};
@@ -330,12 +337,14 @@ enum ErrorType {
     ParameterMismatch,
     TypeMismatch,
     OperationNotAllowed,
-    NonexistingMember
+    NonexistingMember,
+    NonexistingTemplate
 };
 
 std::map<std::string, VariableData> vartable; // only global variables. for extrn, the int is -1, and is solved at linking time.
 std::map<std::string, FunctionDefinition> funtable;
 std::map<std::string, std::vector<TemplateItem>> templatetable;
+std::map<std::string, std::map<std::string, FunctionDefinition>> methodtable;
 
 std::string sourceCode;
 std::string filename;
@@ -400,6 +409,9 @@ void error(ErrorType err, Token token) {
         case NonexistingMember:
             std::cerr << "member doesn't exist: " << token.value << std::endl;
             break;
+        case NonexistingTemplate:
+            std::cerr << "template doesn't exist: " << token.value << std::endl;
+            break;
     }
     std::istringstream stream(sourceCode);
     std::string s;
@@ -437,7 +449,7 @@ void printExpression(Expression exp, int indent) {
                     std::cout << std::string(indent, ' ') << "Floating: " << x.floating << std::endl;
                     break;
                 }
-                case 3:
+                case 2:
                 {
                     std::cout << std::string(indent, ' ') << "Array: " << std::endl;
                     for (int i = 0; i < x.array.size(); i++) {
@@ -445,7 +457,7 @@ void printExpression(Expression exp, int indent) {
                     }
                     break;
                 }
-                case 4:
+                case 3:
                 {
                     std::cout << std::string(indent, ' ') << "Template initialization: " << std::endl;
                     for (int i = 0; i < x.array.size(); i++) {
@@ -704,13 +716,11 @@ private:
     }
     
     bool matchScope(std::vector<int> toMatch) {
-        std::vector<int> a, b;
-
         if (toMatch.size() > scopeTree.size()) {
             return false;
         }
-        for (int i = 0; i < a.size(); ++i) {
-            if (a[i] != b[i]) {
+        for (int i = 0; i < scopeTree.size(); ++i) {
+            if (toMatch[i] != scopeTree[i]) {
                 return false;
             }
         }
@@ -761,11 +771,13 @@ private:
         std::cout<<"\n"<<std::endl;
 
         if (dta.type == DataType::Array && dtb.pointer) {dtb.pointer = 0; matchType(*dta.arrayType, dtb); return;};
-        if (dtb.type == DataType::Array && dta.pointer) {dta.pointer = 0; matchType(*dtb.arrayType, dta); return;};
+        if (dtb.type == DataType::Array && dta.pointer) {dta.pointer = 0; matchType(*dtb.arrayType, dta); return;
+        };
+        if ((dta.type == DataType::Array) != (dtb.type == DataType::Array)) error(TypeMismatch, tokens[current]);
+        if (dta.type == DataType::Array && (dta.arraySize != dtb.arraySize)) error(TypeMismatch, tokens[current]);
         if (dta.type == DataType::AmbiguousInteger || dtb.type == DataType::AmbiguousInteger) return;
         if (dta.pointer != dtb.pointer) error(TypeMismatch, tokens[current]);
         if (dta.type != dtb.type) error(TypeMismatch, tokens[current]);
-        if (dta.type == DataType::Array && (dta.arraySize != dtb.arraySize)) error(TypeMismatch, tokens[current]);
         if (dta.type == DataType::Array) matchType(*dta.arrayType, *dtb.arrayType);
         if (dta.type == DataType::Template) {
             if (dta.templ->size() != dtb.templ->size()) error(TypeMismatch, tokens[current]);
@@ -834,6 +846,9 @@ private:
         return Statement(); // to make gcc SHUT THE FUCK UP ABOUT CONTROL REACHING END OF NON-VOID FUNCTION. ITS NOT GONNA HAPPEN.
     }
 
+    bool theAllegedMemberWasActuallyRevealedToBeAFunctionInTheEnd = false;
+    FunctionCall* saidAllegedMember;
+
     VariableReference parseMember(VariableReference var) {
         VariableReference ret;
         if (tokens[current].value == "[") {
@@ -853,90 +868,182 @@ private:
                 ret = VariableReference(Expression(new Operation(var.position, exp, "+")), *var.var.dataType.arrayType);
             }
         } else if (tokens[current].value == ".") {
-            // template member access
+            // template method/member access
             if (var.var.dataType.type != DataType::Template || var.var.dataType.pointer) {
                 error(TypeMismatch, tokens[current]);
             }
             current++; // Skip "."
-            // handle
-            DataType type;
-            int s = 0;
-            bool found = 0;
-            for (int i = 0; i < var.var.dataType.templ->size(); i++) {
-                if (var.var.dataType.templ->at(i).id == tokens[current].value) {
-                    type = *var.var.dataType.templ->at(i).dataType;
-                    found = true;
-                    break;
+            // check if method or member
+            if (tokens[current+1].value == "(") {
+                //handle function
+                std::string key = "";
+                for (const auto& pair : templatetable) {
+                    if (pair.second == *var.var.dataType.templ) {
+                        key = pair.first;
+                        break;
+                    }
                 }
-                s += var.var.dataType.templ->at(i).dataType->size();
+                saidAllegedMember = new FunctionCall();
+                saidAllegedMember->identifier = tokens[current++].value;
+                if (methodtable[key].find(saidAllegedMember->identifier) == methodtable[key].end()) {
+                    error(UndefinedFunction, tokens[current-1]);
+                }
+                saidAllegedMember->arguments.push_back(Expression(new VariableReference(var)));
+                current++; // Skip "("
+                while (tokens[current].value != ")") {
+                    saidAllegedMember->arguments.push_back(parseExpression().expression);
+                    if (tokens[current].value == ",") current++; // Skip the commas
+                }
+                current++; // Skip ")"
+                
+                if (saidAllegedMember->arguments.size() != methodtable[key][saidAllegedMember->identifier].parameters.size()) {
+                    if (saidAllegedMember->arguments.size()>methodtable[key][saidAllegedMember->identifier].parameters.size()) {
+                        error(ParameterMismatch, tokens[current-1]);
+                    }
+                    for (int i = saidAllegedMember->arguments.size(); i < methodtable[key][saidAllegedMember->identifier].parameters.size(); i++) {
+                        if (methodtable[key][saidAllegedMember->identifier].defaults[i].type != Expression::Other) {
+                            saidAllegedMember->arguments.push_back(methodtable[key][saidAllegedMember->identifier].defaults[i]);
+                        } else {
+                            error(ParameterMismatch, tokens[current-1]);
+                        }
+                    }
+                }
+               
+                theAllegedMemberWasActuallyRevealedToBeAFunctionInTheEnd = true;
+                return var;
+            } else {
+                // handle member
+                DataType type;
+                int s = 0;
+                bool found = 0;
+                for (int i = 0; i < var.var.dataType.templ->size(); i++) {
+                    if (var.var.dataType.templ->at(i).id == tokens[current].value) {
+                        type = *var.var.dataType.templ->at(i).dataType;
+                        found = true;
+                        break;
+                    }
+                    s += var.var.dataType.templ->at(i).dataType->size();
+                }
+                if (!found) {
+                    error(NonexistingMember, tokens[current]);
+                }
+                current++;
+                ret = VariableReference(Expression(new Operation(Expression(new VariableReference(VariableReference::Reference, var.var)), Expression(new LiteralExpression(s)), "+")), type, true);
             }
-            if (!found) {
-                error(NonexistingMember, tokens[current]);
-            }
-            current++;
-            ret = VariableReference(Expression(new Operation(Expression(new VariableReference(VariableReference::Reference, var.var)), Expression(new LiteralExpression(s)), "+")), type, true);
         } else if (tokens[current].value == "->") {
-            // template member access
+            // template member access for pointers
             if (var.var.dataType.type != DataType::Template || !var.var.dataType.pointer) {
                 error(TypeMismatch, tokens[current]);
             }
             current++; // Skip "->"
-            // handle
-            DataType type;
-            int s = 0;
-            bool found = 0;
-            for (int i = 0; i < var.var.dataType.templ->size(); i++) {
-                if (var.var.dataType.templ->at(i).id == tokens[current].value) {
-                    type = *var.var.dataType.templ->at(i).dataType;
-                    found = true;
-                    break;
+            // check if method or member
+            if (tokens[current+1].value == "(") {
+                //handle function
+                std::string key = "";
+                for (const auto& pair : templatetable) {
+                    if (pair.second == *var.var.dataType.templ) {
+                        key = pair.first;
+                        break;
+                    }
                 }
-                s += var.var.dataType.templ->at(i).dataType->size();
+                saidAllegedMember = new FunctionCall();
+                saidAllegedMember->identifier = tokens[current++].value;
+                if (methodtable[key].find(saidAllegedMember->identifier) == methodtable[key].end()) {
+                    error(UndefinedFunction, tokens[current-1]);
+                }
+                var.position = Expression(new VariableReference(var));
+                var.var.dataType.pointer = false;
+                var.type = VariableReference::Pointer;
+                saidAllegedMember->arguments.push_back(Expression(new VariableReference(var)));
+                current++; // Skip "("
+                while (tokens[current].value != ")") {
+                    saidAllegedMember->arguments.push_back(parseExpression().expression);
+                    if (tokens[current].value == ",") current++; // Skip the commas
+                }
+                current++; // Skip ")"
+                
+                if (saidAllegedMember->arguments.size() != methodtable[key][saidAllegedMember->identifier].parameters.size()) {
+                    if (saidAllegedMember->arguments.size()>methodtable[key][saidAllegedMember->identifier].parameters.size()) {
+                        error(ParameterMismatch, tokens[current-1]);
+                    }
+                    for (int i = saidAllegedMember->arguments.size(); i < methodtable[key][saidAllegedMember->identifier].parameters.size(); i++) {
+                        if (methodtable[key][saidAllegedMember->identifier].defaults[i].type != Expression::Other) {
+                            saidAllegedMember->arguments.push_back(methodtable[key][saidAllegedMember->identifier].defaults[i]);
+                        } else {
+                            error(ParameterMismatch, tokens[current-1]);
+                        }
+                    }
+                }
+               
+                theAllegedMemberWasActuallyRevealedToBeAFunctionInTheEnd = true;
+                return var;
+            } else {
+                DataType type;
+                int s = 0;
+                bool found = 0;
+                for (int i = 0; i < var.var.dataType.templ->size(); i++) {
+                    if (var.var.dataType.templ->at(i).id == tokens[current].value) {
+                        type = *var.var.dataType.templ->at(i).dataType;
+                        found = true;
+                        break;
+                    }
+                    s += var.var.dataType.templ->at(i).dataType->size();
+                }
+                if (!found) {
+                    error(NonexistingMember, tokens[current]);
+                }
+                current++;
+                ret = VariableReference(Expression(new Operation(Expression(new VariableReference(var)), Expression(new LiteralExpression(s)), "+")), type, true);
             }
-            if (!found) {
-                error(NonexistingMember, tokens[current]);
-            }
-            current++;
-            ret = VariableReference(Expression(new Operation(Expression(new VariableReference(var)), Expression(new LiteralExpression(s)), "+")), type, true);
         } else {
             return var;
         }
         return parseMember(ret);
     }
 
-    VariableReference parseIdentifier(bool declaration) {
-        VariableReference var = VariableReference();
+    Expression parseIdentifier(bool declaration) {
+        VariableReference* var = new VariableReference();
         if (tokens[current].value == "*" && !declaration) {
-            // pointer
+            // dereference pointer
             current++; // Skip "*"
             Expression exp = parseExpression(true).expression;
             if (exp.type == Expression::VariableReferenceType) {
                 if (!exp.variableReference->var.dataType.pointer) {
                     error(TypeMismatch, tokens[current]);
                 }
+                var = new VariableReference(*exp.variableReference);
+                var->var.dataType.pointer = false;
+                var->position = exp;
+            } else {
+                var = new VariableReference(exp, VariableData(DataType(DataType::Int)));
             }
-            var = VariableReference(exp, VariableData(DataType(DataType::Int)));
+            var->type = VariableReference::Pointer;
         } else if (tokens[current].value == "&" && !declaration) {
             // reference
             current++; // Skip "&"
             checkVariable(false);
-            var = VariableReference(VariableReference::Value, vartable[tokens[current].value]);
+            var = new VariableReference(VariableReference::Value, vartable[tokens[current].value]);
             current++;
-            var = parseMember(var);
-            var.var.dataType.pointer = true;
-            var.type = VariableReference::Reference;
+            var = new VariableReference(parseMember(*var));
+            var->var.dataType.pointer = true;
+            var->type = VariableReference::Reference;
             return var;
         } else {
             // value
             std::string id = sanitize(Identifier);
             checkVariable(false);
-            var = VariableReference(VariableReference::Value, vartable[id]);
+            var = new VariableReference(VariableReference::Value, vartable[id]);
             current++; // Skip self
         }
         if (declaration) {
-            return var;
+            return Expression(var);
         } else {
-            return parseMember(var);
+            VariableReference ret = parseMember(*var);
+            if (theAllegedMemberWasActuallyRevealedToBeAFunctionInTheEnd) {
+                return Expression(saidAllegedMember);
+            } else {
+                return Expression(new VariableReference(ret));
+            }
         }
     }
 
@@ -994,6 +1101,9 @@ private:
                     if (tokens[current].value == ",") current++; // Skip the commas
                 }
                 if (ret->arguments.size() != funtable[ret->identifier].parameters.size()) {
+                    if (ret->arguments.size()>funtable[saidAllegedMember->identifier].parameters.size()) {
+                        error(ParameterMismatch, tokens[current-1]);
+                    }
                     for (int i = ret->arguments.size(); i < funtable[ret->identifier].parameters.size(); i++) {
                         if (funtable[ret->identifier].defaults[i].type != Expression::Other) {
                             ret->arguments.push_back(funtable[ret->identifier].defaults[i]);
@@ -1012,9 +1122,8 @@ private:
                 current++; // Skip storage duration
                 if (tokens[current].value == "int" || tokens[current].value == "short" || tokens[current].value == "long"  || tokens[current].value == "float"  || tokens[current].value == "double"  || tokens[current].value == "char" || templatetable.find(tokens[current].value) != templatetable.end()) current++; // Skip data type
                 if (tokens[current].value == "*") current++; // Skip pointer thingy
-                VariableReference* var = new VariableReference(parseIdentifier(true));
+                expressions.push_back(parseIdentifier(true));
                 while (tokens[current].value != "=") current++;
-                expressions.push_back(Expression(var));
             } else if (tokens[current].value == "sizeof") {
                 current++; // Skip self
                 int size = getType(parseExpression(true).expression).size();
@@ -1022,8 +1131,7 @@ private:
                 expressions.push_back(Expression(ret));
             } else if (tokens[current].type == Identifier || (tokens[current].value == "*" && (current > 0 || tokens[current-1].type != Identifier)) || (tokens[current].value == "&" && tokens[current+1].type == Identifier)) {
                 // Variable
-                VariableReference* var = new VariableReference(parseIdentifier(false));
-                expressions.push_back(Expression(var));
+                 expressions.push_back(parseIdentifier(false));
             } else if (tokens[current].value == "[" || tokens[current].value == "\"") {
                 // Array
                 LiteralExpression* arr = new LiteralExpression(parseArray());
@@ -1110,6 +1218,25 @@ private:
             expressions.erase(expressions.begin());
             op.erase(op.begin());
             ret->value = parseOperation(expressions, op);
+
+            // Empty template inits
+            if (ret->variable.var.dataType.type == DataType::Template) {
+                if (getType(ret->value).type == DataType::Template) {
+                    if (getType(ret->value).size() == 0) {
+                        LiteralExpression* lit = new LiteralExpression();
+                        lit->type = LiteralExpression::TemplateInit;
+                        for (int i = 0; i < ret->variable.var.dataType.templ->size(); i++) {
+                            if (ret->variable.var.dataType.templ->at(i).hasDefaultValue) {
+                                lit->array.push_back(ret->variable.var.dataType.templ->at(i).defaultValue);
+                            } else {
+                                lit->array.push_back(Expression(new LiteralExpression(0)));
+                            }
+                        }
+                        ret->value = Expression(lit);
+                    }
+                }
+            }
+
             matchType(ret->value, Expression(new VariableReference(ret->variable)));
             return Expression(ret);
         } else if (std::find(std::begin(augment), std::end(augment), op[0]) != std::end(augment)) {
@@ -1216,11 +1343,34 @@ private:
         }
         if (tokens[current].value == "*") {ret->returnType.pointer = true; current++;}
         returnType = ret->returnType.type;
+        
+        std::string templ = "";
+        if (tokens[current+1].value == "::") {
+            templ = tokens[current++].value;
+            if (templatetable.find(templ) == templatetable.end()) {
+                error(NonexistingTemplate, tokens[current-1]);
+            }
+            current++; // Skip "::"
+        }
         ret->identifier = tokens[current++].value;
         if (funtable.find(ret->identifier) != funtable.end()) {
             error(FunctionAlreadyDefined, tokens[current-1]);
         }
         skip("("); // Skip "("
+
+        scope++;
+        scopeTree.push_back(scope);
+
+        if (templ != "") {
+            VariableData self;
+            self.dataType = DataType(&templatetable[templ]);
+            self.identifier = "self";
+            self.scope = scopeTree;
+            ret->defaults.push_back(Expression());
+            ret->parameters.push_back(self);
+            vartable["self"] = self;
+        }
+
         while (tokens[current].value != ")") {
             ret->parameters.push_back(parseVariable(false, false));
             ret->defaults.push_back(Expression());
@@ -1239,11 +1389,19 @@ private:
             }
             if (tokens[current].value == ",") current++; // Skip the commas
         }
+
+        scopeTree.pop_back();
+        scope--;
+
         current++; // Skip ")"
         if (!header) {
             ret->body = parseStatement();
         }
-        funtable[ret->identifier] = *ret;
+        if (templ == "") {
+            funtable[ret->identifier] = *ret;
+        } else {
+            methodtable[templ][ret->identifier] = *ret;
+        }
         return Statement(ret);
     }
 
@@ -1532,7 +1690,12 @@ public:
                 tokens.push_back({Punctuation, ";", line, column});
                 column++; currentPos++;
             } else if (source[currentPos] == ':') {
-                tokens.push_back({Punctuation, ":", line, column});
+                if (source[currentPos+1] == ':') {
+                    tokens.push_back({Punctuation, "::", line, column});
+                    column++; currentPos++;
+                } else {
+                    tokens.push_back({Punctuation, ":", line, column});
+                }
                 column++; currentPos++;
             } else if (source[currentPos] == '.') {
                 tokens.push_back({Punctuation, ".", line, column});
