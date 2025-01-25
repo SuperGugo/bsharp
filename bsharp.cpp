@@ -107,7 +107,9 @@ struct DataType {
     bool sign = true;
 
     size_t size() const {
-        if (pointer) {return Int;}
+        if (pointer) {
+            return 8; // pointers are longs
+        }
         switch (type) {
             case Array:
                 return arraySize*arrayType->size();
@@ -170,8 +172,8 @@ struct LiteralExpression {
         TemplateInit
     } type;
 
-    int integer = 0; // also handles char
-    float floating = 0.0;
+    long integer = 0; // also handles char
+    double floating = 0.0;
     std::vector<Expression> array;
 
     LiteralExpression() {};
@@ -350,6 +352,33 @@ std::map<std::string, VariableData> vartable; // only global variables. for extr
 std::map<std::string, FunctionDefinition> funtable;
 std::map<std::string, std::vector<TemplateItem>> templatetable;
 std::map<std::string, std::map<std::string, FunctionDefinition>> methodtable;
+
+DataType getType(Expression expr) {
+    if (expr.type == Expression::TernaryOperationType) return (getType(expr.ternaryOperation->a).type == DataType::AmbiguousInteger ? getType(expr.ternaryOperation->b) : getType(expr.ternaryOperation->a));
+    if (expr.type == Expression::AssignmentType) return expr.assignment->variable.var.dataType;
+    if (expr.type == Expression::VariableReferenceType) return expr.variableReference->var.dataType;
+    if (expr.type == Expression::FunctionCallType) return funtable[expr.functionCall->identifier].returnType;
+    if (expr.type == Expression::CastType) return expr.cast->to;
+    if (expr.type == Expression::OperationType) return (getType(expr.operation->a).type == DataType::AmbiguousInteger ? getType(expr.operation->b) : getType(expr.operation->a));
+    if (expr.type == Expression::LiteralExpressionType) {
+        if (expr.literalExpression->type == LiteralExpression::Array) {
+            DataType* dt = new DataType(getType(expr.literalExpression->array[0]));
+            DataType array = DataType(dt, expr.literalExpression->array.size());
+            return array;
+        } else if (expr.literalExpression->type == LiteralExpression::TemplateInit) {
+            std::vector<TemplateItem> templ;
+            for (int i = 0; i <expr.literalExpression->array.size(); i++) {
+                templ.push_back({"", new DataType(getType(expr.literalExpression->array[i])), Expression(), false});
+            }
+            return DataType(new std::vector<TemplateItem>(templ));;
+        } else if (expr.literalExpression->type == LiteralExpression::Floating) {
+            return DataType(DataType::Float);
+        } else {
+            return DataType(DataType::AmbiguousInteger);
+        }
+    }
+    return DataType();
+}
 
 std::string sourceCode;
 std::string filename;
@@ -693,10 +722,12 @@ public:
         }
         return assembly;
     }
+    std::vector<std::string> assembly;
+    std::vector<std::string> data;
+
 private:
     const std::vector<Statement> ast;
     const CompilationTarget target;
-    std::vector<std::string> assembly;
 
     void translateStatement(Statement x) {
         std::cout << "Translating: " << x.type << std::endl;
@@ -735,13 +766,186 @@ private:
                 break;
         }
     }
+    
+    std::string unpackDoubleToHex(double value) {
+        uint64_t bits = *reinterpret_cast<uint64_t*>(&value);
+        std::stringstream ss;
+        ss << std::hex << std::setw(16) << std::setfill('0') << bits;
+        return ss.str();
+    }
 
-    void translateExpression(Expression x) {
+    std::string reg(const std::string& reg, size_t size) {
+        if (size == 1) {
+            if (reg == "ax") return "al";
+            if (reg == "bx") return "bl";
+            if (reg == "cx") return "cl";
+            if (reg == "dx") return "dl";
+        } else if (size == 2) {
+            if (reg == "ax") return "ax";
+            if (reg == "bx") return "bx";
+            if (reg == "cx") return "cx";
+            if (reg == "dx") return "dx";
+        } else if (size == 4) {
+            if (reg == "ax") return "eax";
+            if (reg == "bx") return "ebx";
+            if (reg == "cx") return "ecx";
+            if (reg == "dx") return "edx";
+        } else if (size == 8) {
+            if (reg == "ax") return "rax";
+            if (reg == "bx") return "rbx";
+            if (reg == "cx") return "rcx";
+            if (reg == "dx") return "rdx";
+        }
+        return "";
+    }
 
+    std::string translateVariable(VariableReference x) {
+        std::string size;
+        switch (x.var.dataType.size()) {
+            case 1:
+                size = "byte";
+                break;
+            case 2:
+                size = "word";
+                break;
+            case 4:
+                size = "dword";
+                break;
+            case 8:
+                size = "qword";
+                break;
+        }
+        switch (x.type) {
+            case 0: {
+                if (x.var.scope.size() == 1) {
+                    return size + " [" + x.var.identifier +"]";
+                } else {
+                    return size + " [rbp-" + std::to_string(x.var.offset+x.var.dataType.size()) +"]";
+                }
+            }
+            case 2: {
+                assembly.push_back("mov\trax, " + translateExpression(x.position));
+                return size+" [rax]";
+            }
+            case 1: {
+                std::string ref = "";
+                if (x.var.scope.size() == 1) {
+                    ref = size + " [" + x.var.identifier +"]";
+                } else {
+                    ref = size + " [rbp-" + std::to_string(x.var.offset+x.var.dataType.size()) +"]";
+                }
+                assembly.push_back("lea\trax, " + ref);
+                
+                return "rax";
+            }
+        }
+        return "";
+    }
+
+    std::string translateExpression(Expression exp, size_t requiredSize = 4) {
+        switch (exp.type) {
+            case 0: {
+                // Literal. ONLY integer and floating SHOULD reach this point of translation.
+                LiteralExpression x = *exp.literalExpression;
+                if (x.type == LiteralExpression::Integer) {
+                    return std::to_string(x.integer);
+                } else {
+                    return unpackDoubleToHex(x.floating);
+                }
+            }
+            case 1: {
+                // Variable
+                VariableReference x = *exp.variableReference;
+                return translateVariable(x);
+            }
+            case 2: {
+                // Assignment
+                Assignment x = *exp.assignment;
+                std::string var = translateVariable(x.variable);
+                std::string val = translateExpression(x.value, x.variable.var.dataType.size());
+
+                if (x.variable.var.scope.size() == 1) {
+                    // If variable is static, it is initialized in the bss section
+                    std::string ret = x.variable.var.identifier + " resb " + std::to_string(x.variable.var.dataType.size());
+                    if (std::find(data.begin(), data.end(), ret) == data.end()) {
+                        data.push_back(ret);
+                    }
+                    
+                }
+                // Note for the future: templates and assignments have to be handled separately. I probably should have done this in the parser, actually. I don't think it's too late to go back.
+                if (x.value.type == Expression::VariableReferenceType && val != "rax") {
+                    // If value is another variable, it has to be moved to a register first
+                    assembly.push_back("mov\t" + reg("ax", x.variable.var.dataType.size()) + ", " + val);
+                    val = reg("ax", x.variable.var.dataType.size());
+                }
+                assembly.push_back("mov\t" + var + ", " + val);
+                return var;
+            }
+            case 3: {
+                // Operation
+                Operation x = *exp.operation;
+                std::string op;
+                std::string a = translateExpression(x.a);
+                std::string b = translateExpression(x.b);
+                std::string out = reg("ax", requiredSize); // the issue
+                assembly.push_back("mov\t" + out + ", " + a);
+
+                if (x.operation == "+") {
+                    op = "add";
+                } else if (x.operation == "-") {
+                    op = "sub";
+                } else if (x.operation == "-") {
+                    op = "SUB";
+                } else if (x.operation == "*") {
+                    op = "imul";
+                } else if (x.operation == "/") {
+                    op = "idiv";
+                } else if (x.operation == "%") {
+                    op = "idiv";
+                    out = reg("dx", requiredSize);
+                    // todo: implement power of two thingy
+                } else if (x.operation == "&") {
+                    op = "and";
+                } else if (x.operation == "|") {
+                    op = "or";
+                } else if (x.operation == "^") {
+                    op = "xor";
+                } else if (x.operation == "~") {
+                    op = "not";
+                } else if (x.operation == ">>") {
+                    op = "shr";
+                } else if (x.operation == "<<") {
+                    op = "shl";
+                } else if (x.operation == "!") {
+                    op = "";
+                } 
+
+                assembly.push_back(op + "\t" + out + ", " + b);
+                return out;
+            }
+            case 4: {
+                // Ternary operator
+                TernaryOperation x = *exp.ternaryOperation;
+                return "ternop";
+            }
+            case 5: {
+                // Function call
+                FunctionCall x = *exp.functionCall;
+                return "call";
+            }
+            case 6: {
+                // Cast
+                Cast x = *exp.cast;
+                return "cast";
+            }
+        }
+        return "";
     }
 
     void translateBlock(Block x) {
-
+        for (int i = 0; i < x.statements.size(); i++) {
+            translateStatement(x.statements[i]);
+        }
     }
 
     void translateFunctionDefinition(FunctionDefinition x) {
@@ -824,33 +1028,6 @@ private:
             }
         }
         return true;
-    }
-
-    DataType getType(Expression expr) {
-        if (expr.type == Expression::TernaryOperationType) return (getType(expr.ternaryOperation->a).type == DataType::AmbiguousInteger ? getType(expr.ternaryOperation->b) : getType(expr.ternaryOperation->a));
-        if (expr.type == Expression::AssignmentType) return expr.assignment->variable.var.dataType;
-        if (expr.type == Expression::VariableReferenceType) return expr.variableReference->var.dataType;
-        if (expr.type == Expression::FunctionCallType) return funtable[expr.functionCall->identifier].returnType;
-        if (expr.type == Expression::CastType) return expr.cast->to;
-        if (expr.type == Expression::OperationType) return (getType(expr.operation->a).type == DataType::AmbiguousInteger ? getType(expr.operation->b) : getType(expr.operation->a));
-        if (expr.type == Expression::LiteralExpressionType) {
-            if (expr.literalExpression->type == LiteralExpression::Array) {
-                DataType* dt = new DataType(getType(expr.literalExpression->array[0]));
-                DataType array = DataType(dt, expr.literalExpression->array.size());
-                return array;
-            } else if (expr.literalExpression->type == LiteralExpression::TemplateInit) {
-                std::vector<TemplateItem> templ;
-                for (int i = 0; i <expr.literalExpression->array.size(); i++) {
-                    templ.push_back({"", new DataType(getType(expr.literalExpression->array[i])), Expression(), false});
-                }
-                return DataType(new std::vector<TemplateItem>(templ));;
-            } else if (expr.literalExpression->type == LiteralExpression::Floating) {
-                return DataType(DataType::Float);
-            } else {
-                return DataType(DataType::AmbiguousInteger);
-            }
-        }
-        return DataType();
     }
 
     void matchType(DataType dta, DataType dtb) {
@@ -2234,12 +2411,15 @@ int main(int argc, char* argv[]) {
         }
     }
     
-
     Translator translator(ast, NASM);
     std::vector<std::string> assembly = translator.translate();
 
     std::cout<< "Translation over." << std::endl;
     for (int i = 0; i < assembly.size(); i++) {
         std::cout<<assembly[i]<<std::endl;
+    }
+    std::cout<< "Data:" << std::endl;
+    for (int i = 0; i < translator.data.size(); i++) {
+        std::cout<<translator.data[i]<<std::endl;
     }
 }
