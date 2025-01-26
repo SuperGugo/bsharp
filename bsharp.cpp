@@ -725,15 +725,19 @@ public:
     }
     std::vector<std::string> assembly;
     std::vector<std::string> data;
+    std::vector<std::string> init;
 
 private:
     const std::vector<Statement> ast;
     const CompilationTarget target;
-    std::vector<int> scopeTree;
+    std::vector<int> scopeTree = {0};
     int scope;
     std::string registers[4] = {""};
     int intermediates = 0;
     int latestLabel = 0;
+    DataType returnType;
+    std::string breakLabel;
+    std::string continueLabel;
 
     void translateStatement(Statement x) {
         std::cout << "Translating: " << x.type << std::endl;
@@ -856,70 +860,98 @@ private:
         return "";
     }
 
-    std::string translateCondition(Expression exp) {
+    std::string translateCondition(Expression exp, bool cmov = false) {
         std::string op = "";
         switch (exp.type) {
             case 3: {
                 // Operation
                 Operation x = *exp.operation;
-                 if (x.operation == ">") {
-                    op = "jle";
+                if (x.operation == ">") {
+                    if (cmov) {
+                        op = "cmovle";
+                    } else {
+                        op = "jle";
+                    }
                 } else if (x.operation == "<") {
-                    op = "jge";
+                    if (cmov) {
+                        op = "cmovge";
+                    } else {
+                        op = "jge";
+                    }
                 } else if (x.operation == "<=") {
-                    op = "jg";
+                    if (cmov) {
+                        op = "cmovg";
+                    } else {
+                        op = "jg";
+                    }
                 } else if (x.operation == ">=") {
-                    op = "jl";
+                    if (cmov) {
+                        op = "cmovl";
+                    } else {
+                        op = "jl";
+                    }
                 } else if (x.operation == "==") {
-                    op = "jne";
+                    if (cmov) {
+                        op = "cmovne";
+                    } else {
+                        op = "jne";
+                    }
                 } else if (x.operation == "!=") {
-                    op = "je";
+                    if (cmov) {
+                        op = "cmove";
+                    } else {
+                        op = "je";
+                    }
                 } else {
                     goto usual;
                 }
                 size_t type = getType(exp).size();
-                std::string a = translateExpression(x.a, type, reg("ax", type));
-                std::string b = translateExpression(x.b, type, reg("bx", type));
-                assembly.push_back("cmp\t" + a + ", " + b);
+                std::string wr = reg("ax", type);
+                std::string a = translateExpression(x.a, type);
+                std::string b = translateExpression(x.b, type);
+                assembly.push_back("mov\t" + wr + ", " + a);
+                assembly.push_back("cmp\t" + wr + ", " + b);
                 break;
             }
             default: {
                 usual:
                 size_t type = getType(exp).size();
-                std::string a = translateExpression(exp, type, reg("ax", type));
-                assembly.push_back("test\t" + a + ", " + a);
-                op = "je";
+                std::string wr = reg("ax", type);
+                std::string a = translateExpression(exp, type);
+                assembly.push_back("mov\t" + wr + ", " + a);
+                assembly.push_back("test\t" + wr + ", " + wr);
+                if (cmov) {
+                    op = "cmove";
+                } else {
+                    op = "je";
+                }
             }
         }
         return op;
     }
 
-    std::string translateExpression(Expression exp, size_t requiredSize = 4, std::string requiredOut = "rax") {
+    std::string translateExpression(Expression exp, size_t requiredSize = 4, bool comingFromOperation = false) {
         switch (exp.type) {
             // conditions (booleans) todo
             case 0: {
                 // Literal. ONLY integer and floating SHOULD reach this point of translation.
                 LiteralExpression x = *exp.literalExpression;
                 if (x.type == LiteralExpression::Integer) {
-                    assembly.push_back("mov\t" + requiredOut + ", " + std::to_string(x.integer));
-                    return requiredOut;
+                    return std::to_string(x.integer);
                 } else {
-                    assembly.push_back("mov\t" + requiredOut + ", " + unpackDoubleToHex(x.floating));
-                    return requiredOut;
+                    return unpackDoubleToHex(x.floating);
                 }
             }
             case 1: {
                 // Variable
                 VariableReference x = *exp.variableReference;
-                assembly.push_back("mov\t" + requiredOut + ", " + translateVariable(x));
-                return requiredOut;
+                return translateVariable(x);
             }
             case 2: {
                 // Assignment
                 Assignment x = *exp.assignment;
                 std::string var = translateVariable(x.variable);
-                //std::string val = translateExpression(x.value, x.variable.var.dataType.size(), reg("ax", x.variable.var.dataType.size()));
-                std::string val = translateExpression(x.value, x.variable.var.dataType.size(), var);
+                std::string val = translateExpression(x.value, x.variable.var.dataType.size());
 
                 if (x.variable.var.scope.size() == 1) {
                     // If variable is static, it is initialized in the bss section
@@ -931,68 +963,114 @@ private:
                 }
                 // Possible optimization: if the variable is already in a register, use it instead
                 // Note for the future: templates and assignments have to be handled separately. I probably should have done this in the parser, actually. I don't think it's too late to go back.
-
-                // assembly.push_back("mov\t" + var + ", " + val);
+                if (x.value.type == Expression::VariableReferenceType) {
+                    assembly.push_back("mov\t" + reg("ax", x.variable.var.dataType.size()) + ", " + val);
+                    val = reg("ax", x.variable.var.dataType.size());
+                }
+                assembly.push_back("mov\t" + var + ", " + val);
+                // i hate this. change it. its just asking for problems really
+                if (scopeTree.size() == 1) {
+                    init.push_back(assembly[assembly.size()-1]);
+                    assembly.pop_back();
+                }
                 return var;
             }
             case 3: {
                 // Operation
                 Operation x = *exp.operation;
-                std::string op;
                 // Possible optimization: only save if you dont have any more registers to work with.
-                //std::string out = sizeName(requiredSize) + " [rbp-" + std::to_string(maxOffset(scopeTree)) +"]";
-                std::string a = translateExpression(x.a, requiredSize, reg("ax", requiredSize));
-                std::string b = translateExpression(x.b, requiredSize, reg("bx", requiredSize));
+                std::string out = sizeName(requiredSize) + " [rbp-" + std::to_string(maxOffset(scopeTree)) +"]";
                 std::string wr = reg("ax", requiredSize);
 
+                std::string a = translateExpression(x.a, requiredSize, true);
+                std::string b = translateExpression(x.b, requiredSize, true);
+                
+
                 bool mod = false;
-                bool test = false;
                 if (x.operation == "+") {
-                    op = "add";
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("add\t" + wr + ", " + b);
                 } else if (x.operation == "-") {
-                    op = "sub";
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("sub\t" + wr + ", " + b);
                 } else if (x.operation == "*") {
-                    op = "imul";
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("imul\t" + wr + ", " + b);
                 } else if (x.operation == "/") {
-                    // todo: implement power of two thingy
-                    op = "idiv";
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("mov\t" + reg("bx", requiredSize) + ", " + b);
+                    assembly.push_back("idiv\t" + reg("bx", requiredSize));
                 } else if (x.operation == "%") {
-                    op = "idiv";
-                    mod = true;
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("mov\t" + reg("bx", requiredSize) + ", " + b);
+                    assembly.push_back("idiv\t" + reg("bx", requiredSize));
+                    wr = reg("dx", requiredSize);
                 } else if (x.operation == "&") {
-                    op = "and";
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("and\t" + wr + ", " + b);
                 } else if (x.operation == "|") {
-                    op = "or";
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("or\t" + wr + ", " + b);
                 } else if (x.operation == "^") {
-                    op = "xor";
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("xor\t" + wr + ", " + b);
                 } else if (x.operation == "~") {
-                    op = "not";
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("not\t" + wr);
                 } else if (x.operation == ">>") {
-                    op = "shr";
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("shr\t" + wr + ", " + b);
                 } else if (x.operation == "<<") {
-                    op = "shl";
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("shl\t" + wr + ", " + b);
                 } else if (x.operation == "!") {
-                    op = "test";
-                    test = true;
-                } 
-                if (test) {
-                    assembly.push_back(op + "\t" + wr + ", " + wr);
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("test\t" + wr + ", " + wr);
                     assembly.push_back("sete\tal");
-                } else {
-                    assembly.push_back(op + "\t" + wr + ", " + b);
+                } else if (x.operation == ">") {
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("cmp\t" + wr + ", " + b);
+                    assembly.push_back("setg\tal");
+                } else if (x.operation == "<") {
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("cmp\t" + wr + ", " + b);
+                    assembly.push_back("setl\tal");
+                } else if (x.operation == "<=") {
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("cmp\t" + wr + ", " + b);
+                    assembly.push_back("setle\tal");
+                } else if (x.operation == ">=") {
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("cmp\t" + wr + ", " + b);
+                    assembly.push_back("setge\tal");
+                } else if (x.operation == "==") {
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("cmp\t" + wr + ", " + b);
+                    assembly.push_back("sete\tal");
+                } else if (x.operation == "!=") {
+                    assembly.push_back("mov\t" + wr + ", " + a);
+                    assembly.push_back("cmp\t" + wr + ", " + b);
+                    assembly.push_back("setne\tal");
                 }
                 
-                if (mod) wr = reg("dx", requiredSize);
-                if (requiredOut != wr) {
-                    assembly.push_back("mov\t" + requiredOut + ", " + wr);
+                if (comingFromOperation) {
+                    assembly.push_back("mov\t" + out + ", " + wr);
+                    intermediates += requiredSize;
+                    return out;
+                } else {
+                    return wr;
                 }
-                intermediates += requiredSize;
-                return requiredOut;
             }
             case 4: {
                 // Ternary operator
                 TernaryOperation x = *exp.ternaryOperation;
-                return "ternop";
+                std::string op = translateCondition(x.condition, true);
+                std::string wr = reg("ax", requiredSize);
+                std::string wr2 = reg("bx", requiredSize);
+                assembly.push_back("mov\t" + wr + ", " + translateExpression(x.a));
+                assembly.push_back("mov\t" + wr2 + ", " + translateExpression(x.b));
+                assembly.push_back(op+"\t" + wr + ", " + wr2);
+                return wr;
             }
             case 5: {
                 // Function call
@@ -1019,7 +1097,11 @@ private:
     }
 
     void translateFunctionDefinition(FunctionDefinition x) {
-
+        assembly.push_back(x.identifier+":");
+        assembly.push_back("push\trbp");
+        assembly.push_back("mov\trbp, rsp");
+        returnType = x.returnType;
+        translateStatement(x.body);
     }
 
     void translateIfStatement(IfStatement x) {
@@ -1040,23 +1122,80 @@ private:
     }
 
     void translateSwitchStatement(SwitchStatement x) {
-
+        std::string endLabel = ".L"+std::to_string(latestLabel);
+        breakLabel = endLabel;
+        latestLabel++;
+        std::string defaultLabel = endLabel;
+        if (x.defaultPresent) {
+            defaultLabel = ".L"+std::to_string(latestLabel);
+            latestLabel++;
+        } 
+        int startLabel = latestLabel;
+        for (auto const& pair : x.branches) {
+            std::string branchLabel = ".L"+std::to_string(latestLabel);
+            latestLabel++;
+            assembly.push_back("cmp\t" + translateExpression(x.condition) + ", " + std::to_string(pair.first));
+            assembly.push_back("je\t" + branchLabel);
+        }
+        assembly.push_back("jmp\t" + defaultLabel);
+        for (auto const& pair : x.branches) {
+            std::string branchLabel = ".L"+std::to_string(startLabel);
+            startLabel++;
+            assembly.push_back(branchLabel+":\t\t; case "+std::to_string(pair.first));
+            translateStatement(pair.second);
+        }
+        if (x.defaultPresent) {
+            assembly.push_back(defaultLabel+":");
+            translateStatement(x.defaultBranch);
+        }
+        assembly.push_back(endLabel+":");
     }
 
     void translateWhileLoop(WhileLoop x) {
-
+        // todo: dowhile
+        std::string conditionLabel = ".L"+std::to_string(latestLabel);
+        continueLabel = conditionLabel;
+        latestLabel++;
+        assembly.push_back(conditionLabel+":");
+        std::string endLabel = ".L"+std::to_string(latestLabel);
+        breakLabel = endLabel;
+        latestLabel++;
+        assembly.push_back(translateCondition(x.condition)+"\t" + endLabel);
+        translateStatement(x.body);
+        assembly.push_back("jmp\t" + conditionLabel);
+        assembly.push_back(endLabel+":");
     }
 
     void translateForLoop(ForLoop x) {
-
+        translateStatement(x.init);
+        std::string conditionLabel = ".L"+std::to_string(latestLabel);
+        latestLabel++;
+        assembly.push_back(conditionLabel+":");
+        std::string endLabel = ".L"+std::to_string(latestLabel);
+        breakLabel = endLabel;
+        latestLabel++;
+        assembly.push_back(translateCondition(x.condition)+"\t" + endLabel);
+        continueLabel = ".L"+std::to_string(latestLabel);
+        latestLabel++;
+        translateStatement(x.body);
+        assembly.push_back(continueLabel+":");
+        translateStatement(x.increment);
+        assembly.push_back("jmp\t" + conditionLabel);
+        assembly.push_back(endLabel+":");
     }
 
     void translateReturnCall(ReturnCall x) {
-
+        assembly.push_back("mov\t" + reg("ax", returnType.size()) + ", " + translateExpression(x.toReturn));
+        assembly.push_back("pop\trbp");
+        assembly.push_back("ret");
     }
 
     void translateBreakCall(BreakCall x) {
-
+        if (x.abrupt) {
+            assembly.push_back("jmp\t" + breakLabel + "\t; break");
+        } else {
+            assembly.push_back("jmp\t" + continueLabel + "\t; continue");
+        }
     }
 
     void translateInlineAsm(InlineAsm x) {
@@ -1635,7 +1774,7 @@ private:
             ret->b = parseOperation(expressions, op);
             matchType(ret->a, ret->b);
             return Expression(ret);
-        } else if (op[0] == "~" || op[0] == "!" || op[0] == "-") {
+        } else if ((op[0] == "~" || op[0] == "!" || op[0] == "-") && expressions[0].type == Expression::Other) {
             Operation* ret = new Operation();
             ret->operation = op[0];
             expressions.erase(expressions.begin());
@@ -2157,7 +2296,7 @@ public:
                 } else if (source[currentPos+1] == '>') {
                     tokens.push_back({Punctuation, "->", line, column});
                     column++; currentPos++;
-                } else if (isdigit(source[currentPos+1]) && tokens[tokens.size()-1].type != Identifier) {
+                } else if (isdigit(source[currentPos+1]) && tokens[tokens.size()-1].type == Punctuation) {
                     column++; currentPos++;
                     tokens.push_back(number(true));
                     column--; currentPos--;
@@ -2516,5 +2655,67 @@ int main(int argc, char* argv[]) {
     std::cout<< "Data:" << std::endl;
     for (int i = 0; i < translator.data.size(); i++) {
         std::cout<<translator.data[i]<<std::endl;
+    }
+    std::cout<< "Init:" << std::endl;
+    for (int i = 0; i < translator.init.size(); i++) {
+        std::cout<<translator.init[i]<<std::endl;
+    }
+    // very temporary. make the actual file. 
+    std::string a = "section .data\n"
+    "msg db 'Result: ', 0\n"
+    "section .bss\n"
+    "num resb 10\n";
+
+    std::string b = "section .text\n"
+    "global _start\n"
+    "_start:\n";
+
+    std::string c = "call main\n"
+    "call int_to_str\n"
+    "mov rax, 1\n"
+    "mov rdi, 1\n"
+    "mov rsi, msg\n"
+    "mov rdx, 8\n"
+    "syscall\n"
+    "mov rax, 1\n"
+    "mov rdi, 1\n"
+    "mov rsi, num\n"
+    "mov rdx, 10\n"
+    "syscall\n"
+    "mov rdi, 0\n"
+    "mov rax, 60\n"
+    "syscall\n"
+    "int_to_str:\n"
+    "mov     rbx, 10\n"
+    "mov     rcx, num\n"
+    "add     rcx, 10\n"
+    "mov     byte [rcx], 0\n"
+    ".convert_loop:\n"
+    "dec     rcx\n"
+    "xor     rdx, rdx\n"
+    "div     rbx\n"
+    "add     dl, '0'\n"
+    "mov     [rcx], dl\n"
+    "test    rax, rax\n"
+    "jnz     .convert_loop\n"
+
+    "mov     rsi, rcx\n"
+    "ret\n";
+    std::ofstream f("out.s");
+    if (!f.is_open()) {
+        std::cerr<<filename<<": No such file or directory."<<std::endl;
+        exit(1);
+    }
+    f << a;
+    for (int i = 0; i < translator.data.size(); i++) {
+        f<<translator.data[i]<<std::endl;
+    }
+    f << std::endl << b;
+    for (int i = 0; i < translator.init.size(); i++) {
+        f<<translator.init[i]<<std::endl;
+    }
+    f << c << std::endl;
+    for (int i = 0; i < translator.assembly.size(); i++) {
+        f<<translator.assembly[i]<<std::endl;
     }
 }

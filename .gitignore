@@ -37,3 +37,4 @@
 # Internal files
 *.bs
 *.h
+*.s
