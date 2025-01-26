@@ -349,6 +349,7 @@ enum ErrorType {
 };
 
 std::map<std::string, VariableData> vartable; // only global variables. for extrn, the int is -1, and is solved at linking time.
+std::map<std::vector<int>, int> offsettable;
 std::map<std::string, FunctionDefinition> funtable;
 std::map<std::string, std::vector<TemplateItem>> templatetable;
 std::map<std::string, std::map<std::string, FunctionDefinition>> methodtable;
@@ -728,6 +729,11 @@ public:
 private:
     const std::vector<Statement> ast;
     const CompilationTarget target;
+    std::vector<int> scopeTree;
+    int scope;
+    std::string registers[4] = {""};
+    int intermediates = 0;
+    int latestLabel = 0;
 
     void translateStatement(Statement x) {
         std::cout << "Translating: " << x.type << std::endl;
@@ -799,22 +805,30 @@ private:
         return "";
     }
 
-    std::string translateVariable(VariableReference x) {
-        std::string size;
-        switch (x.var.dataType.size()) {
-            case 1:
-                size = "byte";
-                break;
-            case 2:
-                size = "word";
-                break;
-            case 4:
-                size = "dword";
-                break;
-            case 8:
-                size = "qword";
-                break;
+    int maxOffset(std::vector<int> scope) {
+        if (offsettable.find(scope) != offsettable.end()) {
+            return offsettable[scope] + intermediates;
+        } else {
+            return intermediates;
         }
+    }
+
+    std::string sizeName(size_t size) {
+        switch (size) {
+            case 1:
+                return "byte";
+            case 2:
+                return "word";
+            case 4:
+                return "dword";
+            case 8:
+                return "qword";
+        }
+        return "";
+    }
+
+    std::string translateVariable(VariableReference x) {
+        std::string size = sizeName(x.var.dataType.size());
         switch (x.type) {
             case 0: {
                 if (x.var.scope.size() == 1) {
@@ -842,27 +856,70 @@ private:
         return "";
     }
 
-    std::string translateExpression(Expression exp, size_t requiredSize = 4) {
+    std::string translateCondition(Expression exp) {
+        std::string op = "";
         switch (exp.type) {
+            case 3: {
+                // Operation
+                Operation x = *exp.operation;
+                 if (x.operation == ">") {
+                    op = "jle";
+                } else if (x.operation == "<") {
+                    op = "jge";
+                } else if (x.operation == "<=") {
+                    op = "jg";
+                } else if (x.operation == ">=") {
+                    op = "jl";
+                } else if (x.operation == "==") {
+                    op = "jne";
+                } else if (x.operation == "!=") {
+                    op = "je";
+                } else {
+                    goto usual;
+                }
+                size_t type = getType(exp).size();
+                std::string a = translateExpression(x.a, type, reg("ax", type));
+                std::string b = translateExpression(x.b, type, reg("bx", type));
+                assembly.push_back("cmp\t" + a + ", " + b);
+                break;
+            }
+            default: {
+                usual:
+                size_t type = getType(exp).size();
+                std::string a = translateExpression(exp, type, reg("ax", type));
+                assembly.push_back("test\t" + a + ", " + a);
+                op = "je";
+            }
+        }
+        return op;
+    }
+
+    std::string translateExpression(Expression exp, size_t requiredSize = 4, std::string requiredOut = "rax") {
+        switch (exp.type) {
+            // conditions (booleans) todo
             case 0: {
                 // Literal. ONLY integer and floating SHOULD reach this point of translation.
                 LiteralExpression x = *exp.literalExpression;
                 if (x.type == LiteralExpression::Integer) {
-                    return std::to_string(x.integer);
+                    assembly.push_back("mov\t" + requiredOut + ", " + std::to_string(x.integer));
+                    return requiredOut;
                 } else {
-                    return unpackDoubleToHex(x.floating);
+                    assembly.push_back("mov\t" + requiredOut + ", " + unpackDoubleToHex(x.floating));
+                    return requiredOut;
                 }
             }
             case 1: {
                 // Variable
                 VariableReference x = *exp.variableReference;
-                return translateVariable(x);
+                assembly.push_back("mov\t" + requiredOut + ", " + translateVariable(x));
+                return requiredOut;
             }
             case 2: {
                 // Assignment
                 Assignment x = *exp.assignment;
                 std::string var = translateVariable(x.variable);
-                std::string val = translateExpression(x.value, x.variable.var.dataType.size());
+                //std::string val = translateExpression(x.value, x.variable.var.dataType.size(), reg("ax", x.variable.var.dataType.size()));
+                std::string val = translateExpression(x.value, x.variable.var.dataType.size(), var);
 
                 if (x.variable.var.scope.size() == 1) {
                     // If variable is static, it is initialized in the bss section
@@ -872,38 +929,36 @@ private:
                     }
                     
                 }
+                // Possible optimization: if the variable is already in a register, use it instead
                 // Note for the future: templates and assignments have to be handled separately. I probably should have done this in the parser, actually. I don't think it's too late to go back.
-                if (x.value.type == Expression::VariableReferenceType && val != "rax") {
-                    // If value is another variable, it has to be moved to a register first
-                    assembly.push_back("mov\t" + reg("ax", x.variable.var.dataType.size()) + ", " + val);
-                    val = reg("ax", x.variable.var.dataType.size());
-                }
-                assembly.push_back("mov\t" + var + ", " + val);
+
+                // assembly.push_back("mov\t" + var + ", " + val);
                 return var;
             }
             case 3: {
                 // Operation
                 Operation x = *exp.operation;
                 std::string op;
-                std::string a = translateExpression(x.a);
-                std::string b = translateExpression(x.b);
-                std::string out = reg("ax", requiredSize); // the issue
-                assembly.push_back("mov\t" + out + ", " + a);
+                // Possible optimization: only save if you dont have any more registers to work with.
+                //std::string out = sizeName(requiredSize) + " [rbp-" + std::to_string(maxOffset(scopeTree)) +"]";
+                std::string a = translateExpression(x.a, requiredSize, reg("ax", requiredSize));
+                std::string b = translateExpression(x.b, requiredSize, reg("bx", requiredSize));
+                std::string wr = reg("ax", requiredSize);
 
+                bool mod = false;
+                bool test = false;
                 if (x.operation == "+") {
                     op = "add";
                 } else if (x.operation == "-") {
                     op = "sub";
-                } else if (x.operation == "-") {
-                    op = "SUB";
                 } else if (x.operation == "*") {
                     op = "imul";
                 } else if (x.operation == "/") {
+                    // todo: implement power of two thingy
                     op = "idiv";
                 } else if (x.operation == "%") {
                     op = "idiv";
-                    out = reg("dx", requiredSize);
-                    // todo: implement power of two thingy
+                    mod = true;
                 } else if (x.operation == "&") {
                     op = "and";
                 } else if (x.operation == "|") {
@@ -917,11 +972,22 @@ private:
                 } else if (x.operation == "<<") {
                     op = "shl";
                 } else if (x.operation == "!") {
-                    op = "";
+                    op = "test";
+                    test = true;
                 } 
-
-                assembly.push_back(op + "\t" + out + ", " + b);
-                return out;
+                if (test) {
+                    assembly.push_back(op + "\t" + wr + ", " + wr);
+                    assembly.push_back("sete\tal");
+                } else {
+                    assembly.push_back(op + "\t" + wr + ", " + b);
+                }
+                
+                if (mod) wr = reg("dx", requiredSize);
+                if (requiredOut != wr) {
+                    assembly.push_back("mov\t" + requiredOut + ", " + wr);
+                }
+                intermediates += requiredSize;
+                return requiredOut;
             }
             case 4: {
                 // Ternary operator
@@ -931,7 +997,7 @@ private:
             case 5: {
                 // Function call
                 FunctionCall x = *exp.functionCall;
-                return "call";
+                return reg("ax",  requiredSize);
             }
             case 6: {
                 // Cast
@@ -943,9 +1009,13 @@ private:
     }
 
     void translateBlock(Block x) {
+        scope++;
+        scopeTree.push_back(scope);
         for (int i = 0; i < x.statements.size(); i++) {
             translateStatement(x.statements[i]);
         }
+        scopeTree.pop_back();
+        scope--;
     }
 
     void translateFunctionDefinition(FunctionDefinition x) {
@@ -953,7 +1023,20 @@ private:
     }
 
     void translateIfStatement(IfStatement x) {
-
+        std::string endLabel = ".L"+std::to_string(latestLabel);
+        latestLabel++;
+        assembly.push_back(translateCondition(x.condition)+"\t" + endLabel);
+        translateStatement(x.thenBranch);
+        std::string elseEndLabel = ".L"+std::to_string(latestLabel);
+        if (x.elsePresent) {
+            assembly.push_back("jmp\t" + elseEndLabel);
+            latestLabel++;
+        }
+        assembly.push_back(endLabel+":");
+        if (x.elsePresent) {
+            translateStatement(x.elseBranch);
+            assembly.push_back(elseEndLabel+":");
+        }
     }
 
     void translateSwitchStatement(SwitchStatement x) {
@@ -1873,6 +1956,9 @@ private:
                     var.offset+=v.second.dataType.size();
                 }
             }
+            if (var.scope.size() != 1) {
+                offsettable[var.scope] = var.offset + var.dataType.size();
+            }
             vartable[var.identifier] = var;
         }
         return var;
@@ -2393,6 +2479,15 @@ int main(int argc, char* argv[]) {
         std::cout << "Size: " << pair.second.dataType.size()<< "\t";
         std::cout << "Type: " << pair.second.dataType.type<< "\n";
         
+    }
+
+    for (const auto& pair : offsettable) {
+        std::cout << "Scope: ";
+        for (int i = 0; i < pair.first.size(); i++) {
+            std::cout << pair.first[i] << " -> ";
+        }
+        std::cout<<"\b\b\b\b   \t";
+        std::cout << "Offset: " << pair.second<< "\n";
     }
 
     for (const auto& templ : templatetable) {
