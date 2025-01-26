@@ -345,7 +345,10 @@ enum ErrorType {
     TypeMismatch,
     OperationNotAllowed,
     NonexistingMember,
-    NonexistingTemplate
+    NonexistingTemplate,
+    BreakOutsideLoop,
+    CodeOutsideFunction, // for the future, not in use rn
+    MissingReturn // might remove to just make it return if there wasn't any found
 };
 
 std::map<std::string, VariableData> vartable; // only global variables. for extrn, the int is -1, and is solved at linking time.
@@ -446,6 +449,15 @@ void error(ErrorType err, Token token) {
             break;
         case NonexistingTemplate:
             std::cerr << "template doesn't exist: " << token.value << std::endl;
+            break;
+        case BreakOutsideLoop:
+            std::cerr << "trying to break outside a nonexisting loop" << std::endl;
+            break;
+        case CodeOutsideFunction:
+            std::cerr << "execution outside a function" << std::endl;
+            break;
+        case MissingReturn:
+            std::cerr << "function is missing a return call" << std::endl;
             break;
     }
     std::istringstream stream(sourceCode);
@@ -1199,7 +1211,7 @@ private:
     }
 
     void translateInlineAsm(InlineAsm x) {
-
+        assembly.push_back(x.code);
     }
 };
 
@@ -1219,6 +1231,8 @@ private:
     int scope;
     std::vector<int> scopeTree;
     DataType returnType;
+    bool isInsideLoop = false;
+    bool returned = false;
 
     // If the current token is of the right type, its value is returned. Otherwise, an error is thrown.
     std::string sanitize(TokenType type) {
@@ -1704,7 +1718,7 @@ private:
         return Statement(parseOperation(expressions, op));
     }
 
-    const std::string augment[15] = {"+=","-=",">>=","<<=","/=","*=","%=","^=","&=","|=","!=","~=", "++", "--", "!!"};
+    const std::string augment[15] = {"+=","-=",">>=","<<=","/=","*=","%=","^=","&=","|=","~=", "++", "--", "!!"};
     
     Expression parseOperation(std::vector<Expression> expressions, std::vector<std::string> op) {
         if (op[0] == "" || op[0] == ":") {
@@ -1893,7 +1907,11 @@ private:
 
         current++; // Skip ")"
         if (!header) {
+            returned = false;
             ret->body = parseStatement();
+            if (!returned) {
+                error(MissingReturn, tokens[current-1]);
+            }
         }
         if (templ == "") {
             funtable[ret->identifier] = *ret;
@@ -1962,7 +1980,9 @@ private:
         if (tokens[current].value == "do") {
             current++; // Skip "do"
             ret->doWhile = true;
+            isInsideLoop = true;
             ret->body = parseStatement();
+            isInsideLoop = false;
             skip("while"); // Skip "("
             skip("("); // Skip "("
             ret->condition = parseExpression().expression;
@@ -1972,7 +1992,9 @@ private:
             skip("("); // Skip "("
             ret->condition = parseExpression().expression;
             current++; // Skip ")"
+            isInsideLoop = true;
             ret->body = parseStatement();
+            isInsideLoop = false;
         }
         return Statement(ret);
     }
@@ -1986,7 +2008,9 @@ private:
         current++; // Skip ";"
         ret->increment = parseStatement();
         current++; // Skip ")"
+        isInsideLoop = true;
         ret->body = parseStatement();
+        isInsideLoop = false;
         return Statement(ret);
     }
 
@@ -2001,11 +2025,15 @@ private:
         }
         
         current++; // Skip ";"
+        returned = true;
         return Statement(ret);
     }
 
     Statement parseBreakCall() {
         BreakCall* ret = new BreakCall();
+        if (!isInsideLoop) {
+            error(BreakOutsideLoop, tokens[current]);
+        }
         ret->abrupt = true;
         current++; // Skip "break"
         skip(";");
@@ -2014,6 +2042,9 @@ private:
 
     Statement parseContinueCall() {
         BreakCall* ret = new BreakCall();
+        if (!isInsideLoop) {
+            error(BreakOutsideLoop, tokens[current]);
+        }
         ret->abrupt = false;
         current++; // Skip "continue"
         skip(";");
@@ -2479,7 +2510,7 @@ private:
 
         for (int i = 0; i < 27; i++) {
             if (keywords[i] == id) {
-                return {Keyword, id};
+                return {Keyword, id, line, (unsigned int)(column-(id.length()))};
             }
         }
 
@@ -2701,11 +2732,13 @@ int main(int argc, char* argv[]) {
 
     "mov     rsi, rcx\n"
     "ret\n";
+
     std::ofstream f("out.s");
     if (!f.is_open()) {
         std::cerr<<filename<<": No such file or directory."<<std::endl;
         exit(1);
     }
+
     f << a;
     for (int i = 0; i < translator.data.size(); i++) {
         f<<translator.data[i]<<std::endl;
