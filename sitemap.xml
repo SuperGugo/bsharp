@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://supergugo.github.io/bsharp/</loc>
+         <lastmod>2025-02-02</lastmod>
+    </url>
+    <url>
+         <loc>https://supergugo.github.io/bsharp/spec/expressions/</loc>
+         <lastmod>2025-02-02</lastmod>
+    </url>
+    <url>
+         <loc>https://supergugo.github.io/bsharp/spec/functions/</loc>
+         <lastmod>2025-02-02</lastmod>
+    </url>
+    <url>
+         <loc>https://supergugo.github.io/bsharp/spec/preprocessing/</loc>
+         <lastmod>2025-02-02</lastmod>
+    </url>
+    <url>
+         <loc>https://supergugo.github.io/bsharp/spec/statements/</loc>
+         <lastmod>2025-02-02</lastmod>
+    </url>
+    <url>
+         <loc>https://supergugo.github.io/bsharp/spec/templates/</loc>
+         <lastmod>2025-02-02</lastmod>
+    </url>
+    <url>
+         <loc>https://supergugo.github.io/bsharp/spec/types/</loc>
+         <lastmod>2025-02-02</lastmod>
+    </url>
+    <url>
+         <loc>https://supergugo.github.io/bsharp/spec/variables/</loc>
+         <lastmod>2025-02-02</lastmod>
+    </url>
+</urlset>
