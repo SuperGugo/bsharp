@@ -1,5 +1,6 @@
 #include <iostream>
 #include <algorithm>
+#include <ostream>
 #include <string>
 #include <vector>
 #include <sstream>
@@ -34,8 +35,8 @@ struct Token {
 };
 
 /*
-    My philosophy regarding expressions and statements is simple: if it has a result in translation, 
-    it is included (as either). This is the reason many such as Declaration Statements are not included: 
+    My philosophy regarding expressions and statements is simple: if it has a result in translation,
+    it is included (as either). This is the reason many such as Declaration Statements are not included:
     they do not have an effect on translation. Technically speaking neither do Blocks, but they are
     included because they affect the way jumps are calculated during translation.
     Another very simple and obvious point is that Expressions always return something (which can be null)
@@ -92,7 +93,7 @@ struct DataType {
         Short,
         Int,
         Long,
-        Float,          
+        Float,
         Double,
         AmbiguousInteger, // literal. doesnt do anything on its own but can match with anything
         Template,
@@ -145,7 +146,7 @@ struct DataType {
                 return 8;
             case AmbiguousInteger:
                 return 8;
-        }        
+        }
         return 0;
     }
 
@@ -187,7 +188,7 @@ struct VariableReference {
         Reference,
         Pointer
     } type;
-    
+
     VariableData var;
     Expression position; // it's usually a literal for Values and Pointers! it's another VariableReference of type Value for References, and something else for Members.
     bool preserveArray = false;
@@ -743,7 +744,7 @@ private:
     const std::vector<Statement> ast;
     const CompilationTarget target;
     std::vector<int> scopeTree = {0};
-    int scope;
+    int scope = 0;
     std::string registers[4] = {""};
     int intermediates = 0;
     int latestLabel = 0;
@@ -788,7 +789,7 @@ private:
                 break;
         }
     }
-    
+
     std::string unpackDoubleToHex(double value) {
         uint64_t bits = *reinterpret_cast<uint64_t*>(&value);
         std::stringstream ss;
@@ -865,7 +866,7 @@ private:
                     ref = size + " [rbp-" + std::to_string(x.var.offset+x.var.dataType.size()) +"]";
                 }
                 assembly.push_back("lea\trax, " + ref);
-                
+
                 return "rax";
             }
         }
@@ -971,7 +972,7 @@ private:
                     if (std::find(data.begin(), data.end(), ret) == data.end()) {
                         data.push_back(ret);
                     }
-                    
+
                 }
                 // Possible optimization: if the variable is already in a register, use it instead
                 // Note for the future: templates and assignments have to be handled separately. I probably should have done this in the parser, actually. I don't think it's too late to go back.
@@ -996,7 +997,7 @@ private:
 
                 std::string a = translateExpression(x.a, requiredSize, true);
                 std::string b = translateExpression(x.b, requiredSize, true);
-                
+
 
                 bool mod = false;
                 if (x.operation == "+") {
@@ -1064,7 +1065,7 @@ private:
                     assembly.push_back("cmp\t" + wr + ", " + b);
                     assembly.push_back("setne\tal");
                 }
-                
+
                 if (comingFromOperation) {
                     assembly.push_back("mov\t" + out + ", " + wr);
                     intermediates += requiredSize;
@@ -1087,6 +1088,21 @@ private:
             case 5: {
                 // Function call
                 FunctionCall x = *exp.functionCall;
+                int argOffset = 0;
+                for (int i = 0; i < x.arguments.size(); i++) {
+                    int parameterSize = funtable[x.identifier].parameters[i].dataType.size();
+                    argOffset+=parameterSize;
+                    // The +16 is EVIL AS FUCK. i HATE IT WITH EVERY OUNCE OF MY BEING. it is 8 bytes of address given by the call and 8 bytes of rbp.
+                    std::string out = translateExpression(x.arguments[i]);
+                    std::string wr = reg("ax", parameterSize);
+                    if (out != wr) {
+                        assembly.push_back("mov\t" + wr + ", " + out);
+                    }
+                    assembly.push_back("mov\t" + sizeName(parameterSize) + " [rbp-" + std::to_string(maxOffset(scopeTree)+argOffset+16) + "], " + wr);
+                }
+                std::cout<<maxOffset(scopeTree)<<"\n";
+                assembly.push_back("call\t" + x.identifier);
+                //assembly.push_back("add\trsp, " + std::to_string(argOffset));
                 return reg("ax",  requiredSize);
             }
             case 6: {
@@ -1105,15 +1121,21 @@ private:
             translateStatement(x.statements[i]);
         }
         scopeTree.pop_back();
-        scope--;
     }
 
     void translateFunctionDefinition(FunctionDefinition x) {
         assembly.push_back(x.identifier+":");
+        std::vector<int> fsc = scopeTree;
+        fsc.push_back(scope+1);
+
         assembly.push_back("push\trbp");
         assembly.push_back("mov\trbp, rsp");
+        assembly.push_back("sub\trsp, " + std::to_string(maxOffset(fsc)));
+
+        //assembly.push_back("enter\t" + std::to_string(maxOffset(fsc)) + ", 0");
         returnType = x.returnType;
         translateStatement(x.body);
+        intermediates = 0;
     }
 
     void translateIfStatement(IfStatement x) {
@@ -1141,7 +1163,7 @@ private:
         if (x.defaultPresent) {
             defaultLabel = ".L"+std::to_string(latestLabel);
             latestLabel++;
-        } 
+        }
         int startLabel = latestLabel;
         for (auto const& pair : x.branches) {
             std::string branchLabel = ".L"+std::to_string(latestLabel);
@@ -1198,7 +1220,8 @@ private:
 
     void translateReturnCall(ReturnCall x) {
         assembly.push_back("mov\t" + reg("ax", returnType.size()) + ", " + translateExpression(x.toReturn));
-        assembly.push_back("pop\trbp");
+        //assembly.push_back("pop\trbp");
+        assembly.push_back("leave");
         assembly.push_back("ret");
     }
 
@@ -1253,7 +1276,7 @@ private:
         }
         current++;
     }
-    
+
     bool matchScope(std::vector<int> a, std::vector<int> b) {
         if (a.size() > b.size()) {
             return false;
@@ -1407,7 +1430,7 @@ private:
                     if (tokens[current].value == ",") current++; // Skip the commas
                 }
                 current++; // Skip ")"
-                
+
                 if (saidAllegedMember->arguments.size() != methodtable[key][saidAllegedMember->identifier].parameters.size()) {
                     if (saidAllegedMember->arguments.size()>methodtable[key][saidAllegedMember->identifier].parameters.size()) {
                         error(ParameterMismatch, tokens[current-1]);
@@ -1420,7 +1443,7 @@ private:
                         }
                     }
                 }
-               
+
                 theAllegedMemberWasActuallyRevealedToBeAFunctionInTheEnd = true;
                 return var;
             } else {
@@ -1473,7 +1496,7 @@ private:
                     if (tokens[current].value == ",") current++; // Skip the commas
                 }
                 current++; // Skip ")"
-                
+
                 if (saidAllegedMember->arguments.size() != methodtable[key][saidAllegedMember->identifier].parameters.size()) {
                     if (saidAllegedMember->arguments.size()>methodtable[key][saidAllegedMember->identifier].parameters.size()) {
                         error(ParameterMismatch, tokens[current-1]);
@@ -1486,7 +1509,7 @@ private:
                         }
                     }
                 }
-               
+
                 theAllegedMemberWasActuallyRevealedToBeAFunctionInTheEnd = true;
                 return var;
             } else {
@@ -1596,36 +1619,45 @@ private:
         return lit;
     }
 
+    FunctionDefinition currentFunction; // this is to allow recursion
+
     Statement parseExpression(bool single = false) {
         std::vector<Expression> expressions;
         std::vector<std::string> op;
-        
+
         while (tokens[current].value != ";" && tokens[current].value != ")" && tokens[current].value != "," && tokens[current].value != "]" && !(tokens[current].value == ">" && (tokens[current+1].value == ";" || tokens[current+1].value == "," || tokens[current+1].value == ">" || tokens[current+1].value == "]")) && current < tokens.size()-1) {
             if (tokens[current].type == Identifier && tokens[current+1].value == "(") {
+                // Function call
                 FunctionCall* ret = new FunctionCall();
                 ret->identifier = tokens[current++].value;
-                if (funtable.find(ret->identifier) == funtable.end()) {
-                    error(UndefinedFunction, tokens[current-1]);
+                FunctionDefinition func = funtable[ret->identifier];
+                if (ret->identifier == currentFunction.identifier) {
+                    func = currentFunction;
+                } else {
+                    if (funtable.find(ret->identifier) == funtable.end()) {
+                        error(UndefinedFunction, tokens[current-1]);
+                    }
                 }
+
                 current++; // Skip "("
                 while (tokens[current].value != ")") {
                     ret->arguments.push_back(parseExpression().expression);
                     if (tokens[current].value == ",") current++; // Skip the commas
                 }
-                if (ret->arguments.size() != funtable[ret->identifier].parameters.size()) {
+                if (ret->arguments.size() != func.parameters.size()) {
                     if (ret->arguments.size()>funtable[saidAllegedMember->identifier].parameters.size()) {
                         error(ParameterMismatch, tokens[current-1]);
                     }
-                    for (int i = ret->arguments.size(); i < funtable[ret->identifier].parameters.size(); i++) {
-                        if (funtable[ret->identifier].defaults[i].type != Expression::Other) {
-                            ret->arguments.push_back(funtable[ret->identifier].defaults[i]);
+                    for (int i = ret->arguments.size(); i < func.parameters.size(); i++) {
+                        if (func.defaults[i].type != Expression::Other) {
+                            ret->arguments.push_back(func.defaults[i]);
                         } else {
                             error(ParameterMismatch, tokens[current-1]);
                         }
                     }
                 }
                 for (int i = 0; i < ret->arguments.size(); i++) {
-                    matchType(getType(ret->arguments[i]), funtable[ret->identifier].parameters[i].dataType);
+                    matchType(getType(ret->arguments[i]), func.parameters[i].dataType);
                 }
                 current++; // Skip ")"
                 expressions.push_back(ret);
@@ -1714,12 +1746,12 @@ private:
             } else {
                 op.push_back("");
             }
-        }  
+        }
         return Statement(parseOperation(expressions, op));
     }
 
     const std::string augment[15] = {"+=","-=",">>=","<<=","/=","*=","%=","^=","&=","|=","~=", "++", "--", "!!"};
-    
+
     Expression parseOperation(std::vector<Expression> expressions, std::vector<std::string> op) {
         if (op[0] == "" || op[0] == ":") {
             return expressions[0];
@@ -1855,7 +1887,7 @@ private:
         }
         if (tokens[current].value == "*") {ret->returnType.pointer = true; current++;}
         returnType = ret->returnType.type;
-        
+
         std::string templ = "";
         if (tokens[current+1].value == "::") {
             templ = tokens[current++].value;
@@ -1906,6 +1938,8 @@ private:
         scope--;
 
         current++; // Skip ")"
+        currentFunction = *ret;
+
         if (!header) {
             returned = false;
             ret->body = parseStatement();
@@ -2023,7 +2057,7 @@ private:
             ret->toReturn = parseExpression().expression;
             matchType(getType(ret->toReturn), returnType);
         }
-        
+
         current++; // Skip ";"
         returned = true;
         return Statement(ret);
@@ -2095,7 +2129,7 @@ private:
             var.dataType.pointer = true;
             current++;
         }
-        
+
         var.identifier = sanitize(Identifier);
         if (!abstract) {
             checkVariable();
@@ -2103,7 +2137,7 @@ private:
         current++; // Skip identifier
         while (tokens[current].value == "[") {
             var.dataType.arrayType = new DataType(var.dataType);
-            
+
             var.dataType.type = DataType::Array;
             current++; // Skip "["
             if (tokens[current].value == "]" && autoSize) {
@@ -2192,7 +2226,7 @@ private:
                 matchType(*dt, getType(exp));
                 ret.push_back({varName, dt, exp, true});
             } else {
-                ret.push_back({varName, dt, Expression(), false});    
+                ret.push_back({varName, dt, Expression(), false});
             }
             if (tokens[current].value == ",") current++; // Skip the commas
         }
@@ -2207,7 +2241,7 @@ private:
 class Lexer {
 public:
     Lexer(const std::string& source) : source(source), currentPos(0), line(0), column(0) {}
-    
+
     std::vector<Token> tokenize() {
         std::vector<Token> tokens;
         while (currentPos < source.size()) {
@@ -2370,7 +2404,7 @@ public:
                 } else if (source[currentPos+1] == '/') {
                     while (source[currentPos] != '\n' && source[currentPos] != 0) {
                         currentPos++;
-                    }  
+                    }
                     line++; column = 0;
                 } else if (source[currentPos+1] == '*') {
                     column+=2; currentPos+=2;
@@ -2383,7 +2417,7 @@ public:
                             line++;
                             column = 0;
                         }
-                    }  
+                    }
                     column++; currentPos++;
                 } else {
                     tokens.push_back({Punctuation, "/", line, column});
@@ -2458,7 +2492,7 @@ public:
                 tokens.push_back({Unknown, std::to_string(source[currentPos]), line, column});
                 column++; currentPos++;
             }
-            
+
         }
         tokens.push_back({EoF, "", line, column});
         sourceCode = source;
@@ -2476,7 +2510,7 @@ private:
         "char", "short", "int", "long", "float", "double", "template",
         // Storage duration
         "auto", "static", "extrn",
-        // Other  
+        // Other
         "sizeof", "asm",
         // Reserved (not in present use)
         "bool", "union", "enum",
@@ -2593,7 +2627,7 @@ private:
                 error(FileNotFound, {Identifier, directives[1], line-1, 0});
             }
             std::stringstream buffer;
-            buffer << include.rdbuf(); 
+            buffer << include.rdbuf();
             source.insert(currentPos, buffer.str()+"\n");
         } else {
             // TODO: conditional!
@@ -2611,22 +2645,22 @@ int main(int argc, char* argv[]) {
             exit(1);
         }
         std::stringstream buffer;
-        buffer << f.rdbuf(); 
+        buffer << f.rdbuf();
         sourceCode = buffer.str();
     }
-    
+
     Lexer lexer(sourceCode);
     std::vector<Token> tokens = lexer.tokenize();
     int it = 0;
-    
+
     std::cout<< "Lexing over." << std::endl;
     for (const auto& token : tokens) {
-        std::cout << it << " Token: " << token.value << " Type: " << static_cast<int>(token.type) 
+        std::cout << it << " Token: " << token.value << " Type: " << static_cast<int>(token.type)
                 << " Line: " << token.line << " Column: " << token.column << std::endl;
         it++;
     }
     std::cout<<std::endl;
-    
+
     Parser parser(tokens);
     std::vector<Statement> ast = parser.parse();
 
@@ -2635,7 +2669,7 @@ int main(int argc, char* argv[]) {
         printNode(ast[i], 0);
     }
     std::cout<<std::endl;
-    
+
     // debug!
     for (const auto& pair : vartable) {
         std::cout<<"Variable name: "<<pair.first<<"\t";
@@ -2645,10 +2679,10 @@ int main(int argc, char* argv[]) {
         }
         std::cout<<"\b\b\b\b   \t";
         std::cout << "Offset: " << pair.second.offset<< "\t";
-        
+
         std::cout << "Size: " << pair.second.dataType.size()<< "\t";
         std::cout << "Type: " << pair.second.dataType.type<< "\n";
-        
+
     }
 
     for (const auto& pair : offsettable) {
@@ -2675,7 +2709,7 @@ int main(int argc, char* argv[]) {
             std::cout << "\n";
         }
     }
-    
+
     Translator translator(ast, NASM);
     std::vector<std::string> assembly = translator.translate();
 
@@ -2691,7 +2725,7 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < translator.init.size(); i++) {
         std::cout<<translator.init[i]<<std::endl;
     }
-    // very temporary. make the actual file. 
+    // very temporary. make the actual file.
     std::string a = "section .data\n"
     "msg db 'Result: ', 0\n"
     "section .bss\n"
