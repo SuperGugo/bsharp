@@ -1,0 +1,13 @@
+site_name: B# Docs
+site_url: https://supergugo.github.io/bsharp
+nav:
+  - Home: index.md
+  - Language Spec:
+    - Data Types: spec/types.md
+    - Variables: spec/variables.md
+    - Expressions: spec/expressions.md
+    - Statements: spec/statements.md
+    - Functions: spec/functions.md
+    - Templates: spec/templates.md
+    - Preprocessing: spec/preprocessing.md
+theme: readthedocs

@@ -38,3 +38,6 @@
 *.bs
 *.h
 *.s
+
+# Docs
+site/
