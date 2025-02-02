@@ -22,20 +22,32 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++  # Install GCC on Linux
+          sudo apt-get install -y g++
 
       - name: Set up build environment
         if: matrix.os == 'windows-latest'
         run: |
-          choco install mingw -y  # Install MinGW on Windows
+          choco install mingw -y
+          
+      - name: Set up build environment
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install gcc
+          
+      - name: Compile bsharp.cpp
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+            g++ bsharp.cpp -o bsc
+            
+      - name: Compile bsharp.cpp
+        if: matrix.os == 'windows-latest'
+        run: |
+            g++ bsharp.cpp -o bsc.exe
 
       - name: Compile bsharp.cpp
+        if: matrix.os == 'macos-latest'
         run: |
-          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
-            g++ bsharp.cpp -o bsc
-          elif [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            g++ bsharp.cpp -o bsc.exe
-          fi
+            g++ bsharp.cpp -o bsc_mac
 
       - name: Upload binary as artifact
         uses: actions/upload-artifact@v4
@@ -43,4 +55,5 @@ jobs:
           name: bsharp_${{ matrix.os }}
           path: |
             bsc
+            bsc_mac
             bsc.exe
